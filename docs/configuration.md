@@ -42,3 +42,21 @@ Notes:
 - Alias keys may omit the `/` prefix.
 - Alias values should point at one of the built-in commands such as `/help`, `/status`, `/stop`, `/new`, or `/llm`.
 - Matching is token-exact on the first token, so `帮助` can trigger help while `帮助我看看这个错误` is still treated as a normal user message.
+
+## Progress throttling and processing heartbeat
+Two timing knobs control how chatty the bot feels in WeChat:
+
+```toml
+[wechat]
+# same-turn progress update throttle; set to 0 to disable throttling
+progress_interval_sec = 12
+
+# keepalive message interval while a turn is still running
+heartbeat_interval_sec = 60
+```
+
+Notes:
+- `progress_interval_sec` throttles repeated `progress` events from the same turn so WeChat does not get spammed.
+- Set `progress_interval_sec = 0` to disable progress throttling entirely.
+- `heartbeat_interval_sec` controls how often the bot sends `⏳ 还在处理中，请稍等...` when a turn stays quiet for too long.
+- The default heartbeat interval is **60 seconds**.

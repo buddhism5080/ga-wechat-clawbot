@@ -35,6 +35,7 @@ class _FakeController:
         self.running = None
         self.started = None
         self.interventions = []
+        self.abort_calls = 0
 
     def start_turn(self, prompt, images, on_event, on_exit):
         self.started = (prompt, images)
@@ -55,6 +56,7 @@ class _FakeController:
         return {"llm_no": llm_no, "name": f"model-{llm_no}"}
 
     def abort(self):
+        self.abort_calls += 1
         self.running = None
 
     def reset_state(self):
@@ -65,7 +67,7 @@ class SessionTests(unittest.TestCase):
     def _config(self, tmp):
         return AppConfig(
             ga=GAConfig(root=Path("/tmp/GenericAgent"), python="python3", default_llm_no=0, turn_timeout_sec=900, session_idle_ttl_sec=3600),
-            wechat=WeChatConfig(allowed_users=set(), token_file=Path("~/.wxbot/token.json"), media_dir=Path(tmp) / "media", voice_encoder_cmd="", progress_interval_sec=12, progress_turn_stride=2),
+            wechat=WeChatConfig(allowed_users=set(), token_file=Path("~/.wxbot/token.json"), media_dir=Path(tmp) / "media", voice_encoder_cmd="", progress_interval_sec=12, progress_turn_stride=2, heartbeat_interval_sec=60),
             storage=StorageConfig(root=Path(tmp) / "state", log_dir=Path(tmp) / "logs"),
             config_path=Path(tmp) / "config.toml",
         )
@@ -157,6 +159,83 @@ class SessionTests(unittest.TestCase):
             session._on_event({"event": "progress", "turn": 2, "summary": "step-2", "tool_calls": []})
             self.assertEqual(len(client.sent_text), 2)
             self.assertIn("第 2 轮", client.sent_text[-1][2])
+
+    def test_progress_event_can_disable_throttling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            cfg.wechat.progress_interval_sec = 0
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            session._current_user_id = "u1"
+            session._current_context_token = "ctx-token"
+            session._on_event({"event": "progress", "turn": 1, "summary": "step-1", "tool_calls": []})
+            session._on_event({"event": "progress", "turn": 1, "summary": "step-2", "tool_calls": []})
+            self.assertEqual(len(client.sent_text), 2)
+
+    def test_processing_ping_sends_keepalive_after_silence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            controller = _FakeController()
+            running = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
+            controller.running = running
+            session.controller = controller
+            session._current_user_id = "u1"
+            session._current_context_token = "ctx-token"
+            session._latest_progress_summary = "准备检查 thunderbird-agent 状态"
+            session._last_user_visible_update_at = 0.0
+            self.assertTrue(session._maybe_send_processing_ping(running, now=60.0))
+            self.assertIn("还在处理中", client.sent_text[-1][2])
+            self.assertIn("thunderbird-agent", client.sent_text[-1][2])
+
+    def test_processing_ping_uses_configured_heartbeat_interval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            cfg.wechat.heartbeat_interval_sec = 75
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            controller = _FakeController()
+            running = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
+            controller.running = running
+            session.controller = controller
+            session._current_user_id = "u1"
+            session._current_context_token = "ctx-token"
+            session._last_user_visible_update_at = 0.0
+            self.assertFalse(session._maybe_send_processing_ping(running, now=74.0))
+            self.assertTrue(session._maybe_send_processing_ping(running, now=75.0))
+
+    def test_processing_ping_ignores_stale_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            controller = _FakeController()
+            stale = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
+            current = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
+            controller.running = current
+            session.controller = controller
+            session._current_user_id = "u1"
+            session._current_context_token = "ctx-token"
+            session._last_user_visible_update_at = 0.0
+            self.assertFalse(session._maybe_send_processing_ping(stale, now=25.0))
+            self.assertEqual(client.sent_text, [])
+
+    def test_timeout_helper_ignores_stale_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            controller = _FakeController()
+            stale = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
+            current = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
+            controller.running = current
+            session.controller = controller
+            session._current_user_id = "u1"
+            session._current_context_token = "ctx-token"
+            self.assertFalse(session._maybe_timeout_run(stale, started_at=0.0, now=2000.0))
+            self.assertEqual(controller.abort_calls, 0)
+            self.assertEqual(client.sent_text, [])
 
     def test_send_generated_files_accepts_windows_style_file_ref(self):
         with tempfile.TemporaryDirectory() as tmp:

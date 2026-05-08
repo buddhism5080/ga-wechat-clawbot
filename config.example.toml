@@ -10,7 +10,10 @@ allowed_users = []
 token_file = "~/.wxbot/token.json"
 media_dir = "./state/media"
 voice_encoder_cmd = ""
+# progress update throttle for the same turn; set to 0 to disable throttling
 progress_interval_sec = 12
+# processing keepalive / heartbeat interval while a turn is still running
+heartbeat_interval_sec = 60
 progress_turn_stride = 2
 
 [wechat.command_aliases]

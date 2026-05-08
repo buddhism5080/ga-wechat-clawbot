@@ -26,6 +26,7 @@ class WeChatConfig:
     voice_encoder_cmd: str = ""
     progress_interval_sec: int = 12
     progress_turn_stride: int = 2
+    heartbeat_interval_sec: int = 60
     command_aliases: dict[str, str] = field(default_factory=dict)
 
 
@@ -88,8 +89,9 @@ def load_config(path: str | Path) -> AppConfig:
         token_file=expand_path(wechat_raw.get("token_file") or "~/.wxbot/token.json"),
         media_dir=ensure_dir(wechat_raw.get("media_dir") or storage_root / "media"),
         voice_encoder_cmd=str(wechat_raw.get("voice_encoder_cmd", "") or "").strip(),
-        progress_interval_sec=max(3, int(wechat_raw.get("progress_interval_sec", 12) or 12)),
+        progress_interval_sec=max(0, int(wechat_raw.get("progress_interval_sec", 12))),
         progress_turn_stride=max(1, int(wechat_raw.get("progress_turn_stride", 2) or 2)),
+        heartbeat_interval_sec=max(1, int(wechat_raw.get("heartbeat_interval_sec", 60) or 60)),
         command_aliases=_string_mapping(wechat_raw.get("command_aliases")),
     )
 

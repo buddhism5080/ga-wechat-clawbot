@@ -41,6 +41,7 @@ class SessionActor:
         self._typing_stop = threading.Event()
         self._typing_thread: threading.Thread | None = None
         self._timeout_thread: threading.Thread | None = None
+        self._heartbeat_thread: threading.Thread | None = None
         self._saw_ask_user = False
         self._saw_error = False
         self._saw_abort = False
@@ -49,6 +50,8 @@ class SessionActor:
         self._abort_notice_pending = False
         self._progress_turn: int | None = None
         self._progress_at = 0.0
+        self._last_user_visible_update_at = 0.0
+        self._latest_progress_summary = ""
         self._current_user_id = ""
         self._current_context_token = ""
         self._current_inbound_paths: set[str] = set()
@@ -60,8 +63,55 @@ class SessionActor:
         return self.controller.running is not None and self.controller.running.process.poll() is None
 
     def _reply(self, text: str) -> None:
+        self._last_user_visible_update_at = time.time()
         for chunk in split_markdown_chunks(text):
             self.client.send_text(self._current_user_id, chunk, context_token=self._current_context_token)
+
+    def _same_running(self, expected_running) -> bool:
+        current = self.controller.running
+        return current is expected_running and current is not None and current.process.poll() is None
+
+    def _processing_ping_interval_sec(self) -> int:
+        return max(1, int(self.config.wechat.heartbeat_interval_sec))
+
+    def _maybe_send_processing_ping(self, expected_running, now: float | None = None) -> bool:
+        if not self._same_running(expected_running):
+            return False
+        now = time.time() if now is None else now
+        if now - self._last_user_visible_update_at < self._processing_ping_interval_sec():
+            return False
+        message = "⏳ 还在处理中，请稍等..."
+        if self._latest_progress_summary:
+            message += f"\n\n- 最近进展：{self._latest_progress_summary}"
+        self._reply(message)
+        self._last_user_visible_update_at = now
+        return True
+
+    def _start_processing_ping(self, expected_running) -> None:
+        interval = self._processing_ping_interval_sec()
+        if interval <= 0:
+            return
+
+        def _watch() -> None:
+            while self._same_running(expected_running):
+                self._maybe_send_processing_ping(expected_running)
+                time.sleep(min(3, max(1, interval // 4)))
+
+        self._heartbeat_thread = threading.Thread(target=_watch, daemon=True, name=f"wechat-heartbeat-{safe_slug(self.session_key)}")
+        self._heartbeat_thread.start()
+
+    def _maybe_timeout_run(self, expected_running, started_at: float, now: float | None = None) -> bool:
+        if not self._same_running(expected_running):
+            return False
+        now = time.time() if now is None else now
+        timeout_sec = self.config.ga.turn_timeout_sec
+        if now < started_at + timeout_sec:
+            return False
+        self._timed_out = True
+        self._saw_error = True
+        self.controller.abort()
+        self._reply(render_abort_message(f"超过 {timeout_sec} 秒仍未完成。", timed_out=True))
+        return True
 
     def _start_typing(self) -> None:
         self._typing_stop = threading.Event()
@@ -90,20 +140,14 @@ class SessionActor:
     def _stop_typing(self) -> None:
         self._typing_stop.set()
 
-    def _start_timeout_watchdog(self, started_at: float) -> None:
-        timeout_sec = self.config.ga.turn_timeout_sec
-
+    def _start_timeout_watchdog(self, running) -> None:
         def _watch() -> None:
-            deadline = started_at + timeout_sec
+            deadline = running.started_at + self.config.ga.turn_timeout_sec
             while time.time() < deadline:
-                if not self.is_running:
+                if not self._same_running(running):
                     return
                 time.sleep(1)
-            if self.is_running:
-                self._timed_out = True
-                self._saw_error = True
-                self.controller.abort()
-                self._reply(render_abort_message(f"超过 {timeout_sec} 秒仍未完成。", timed_out=True))
+            self._maybe_timeout_run(running, running.started_at)
 
         self._timeout_thread = threading.Thread(target=_watch, daemon=True, name=f"wechat-timeout-{safe_slug(self.session_key)}")
         self._timeout_thread.start()
@@ -162,6 +206,7 @@ class SessionActor:
             self._clear_pending_interventions()
             return False
         self.client.send_text(user_id, "↪️ 已插入当前任务，会在下一轮生效。", context_token=context_token)
+        self._last_user_visible_update_at = time.time()
         return True
 
     def submit_turn(self, user_id: str, context_token: str, text: str, attachments: Sequence[AttachmentRef]) -> None:
@@ -170,6 +215,7 @@ class SessionActor:
             return
         if self.is_running:
             self.client.send_text(user_id, "⚠️ 当前会话还在运行中，补充消息插入失败，请稍后重试或发送 /stop。", context_token=context_token)
+            self._last_user_visible_update_at = time.time()
             return
         self._clear_pending_interventions()
         self._current_user_id = user_id
@@ -184,6 +230,8 @@ class SessionActor:
         self._abort_notice_pending = False
         self._progress_turn = None
         self._progress_at = 0.0
+        self._last_user_visible_update_at = time.time()
+        self._latest_progress_summary = "任务已启动，正在等待模型响应"
         prompt, image_paths = self.build_prompt(text, attachments)
         self._start_typing()
         try:
@@ -193,7 +241,8 @@ class SessionActor:
             self._saw_error = True
             self._reply(f"❌ 启动 GA turn 失败：{exc}")
             return
-        self._start_timeout_watchdog(running.started_at)
+        self._start_timeout_watchdog(running)
+        self._start_processing_ping(running)
 
     def _send_generated_files(self, files: Sequence[str]) -> None:
         sent = set()
@@ -231,10 +280,12 @@ class SessionActor:
         if event == "progress":
             turn = int(payload.get("turn", 0) or 0)
             now = time.time()
-            if self._progress_turn is not None and turn == self._progress_turn and now - self._progress_at < self.config.wechat.progress_interval_sec:
+            throttle_sec = int(self.config.wechat.progress_interval_sec)
+            if throttle_sec > 0 and self._progress_turn is not None and turn == self._progress_turn and now - self._progress_at < throttle_sec:
                 return
             self._progress_turn = turn
             self._progress_at = now
+            self._latest_progress_summary = str(payload.get("summary", "") or "").strip() or self._latest_progress_summary
             self._reply(render_progress_update(turn, str(payload.get("summary", "")), payload.get("tool_calls") or []))
             return
         if event == "ask_user":
@@ -247,6 +298,8 @@ class SessionActor:
             rendered = render_final_reply(str(payload.get("raw_text", "")), generated_paths=payload.get("generated_files") or [])
             for chunk in rendered.text_chunks:
                 self.client.send_text(self._current_user_id, chunk, context_token=self._current_context_token)
+            if rendered.text_chunks:
+                self._last_user_visible_update_at = time.time()
             self._send_generated_files(rendered.generated_files)
             return
         if event == "aborted":

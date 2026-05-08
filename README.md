@@ -52,6 +52,19 @@ You can also define custom command aliases in `config.toml`, including aliases t
 
 Aliases match the first token exactly, so `帮助` can be a command alias while `帮助我分析一下` still goes through the normal chat path.
 
+Progress and liveness tuning is configurable too:
+
+```toml
+[wechat]
+# same-turn progress update throttle; set to 0 to disable throttling
+progress_interval_sec = 12
+
+# "still processing" keepalive interval
+heartbeat_interval_sec = 60
+```
+
+The heartbeat defaults to **60 seconds**.
+
 ## Doctor
 ```bash
 ga-wechat-clawbot --config config.toml doctor
