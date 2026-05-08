@@ -37,6 +37,25 @@ class _FakeProcess:
 
 
 class ControllerTests(unittest.TestCase):
+    def test_controller_creates_ga_prompt_compat_entries_in_session_dir(self):
+        with tempfile.TemporaryDirectory() as ga_tmp:
+            ga_root = Path(ga_tmp)
+            (ga_root / "memory").mkdir()
+            (ga_root / "memory" / "memory_management_sop.md").write_text("sop", "utf-8")
+            (ga_root / "assets").mkdir()
+            (ga_root / "assets" / "insight_fixed_structure.txt").write_text("Facts(L2): ../memory/global_mem.txt", "utf-8")
+            (ga_root / "ga.py").write_text("print('ga')\n", "utf-8")
+            (ga_root / "agentmain.py").write_text("print('agentmain')\n", "utf-8")
+            with tempfile.TemporaryDirectory() as tmp:
+                session_dir = Path(tmp)
+                (session_dir / "work").mkdir()
+                GATurnController(ga_root, session_dir)
+                self.assertEqual((session_dir / "memory" / "memory_management_sop.md").read_text("utf-8"), "sop")
+                self.assertEqual((session_dir / "assets" / "insight_fixed_structure.txt").read_text("utf-8"), "Facts(L2): ../memory/global_mem.txt")
+                self.assertEqual((session_dir / "ga.py").read_text("utf-8"), "print('ga')\n")
+                self.assertEqual((session_dir / "agentmain.py").read_text("utf-8"), "print('agentmain')\n")
+                self.assertTrue((session_dir / "work" / ".." / "memory" / "memory_management_sop.md").exists())
+
     def test_list_llms_uses_probe_worker_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             controller = GATurnController("/tmp/GenericAgent", tmp)

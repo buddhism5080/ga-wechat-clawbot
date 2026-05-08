@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -35,7 +36,25 @@ class GATurnController:
         self.running: RunningTurn | None = None
         self._lock = threading.Lock()
         self._src_root = Path(__file__).resolve().parents[2] / "src"
+        self._ensure_prompt_compat_entries()
         self._ensure_default_state()
+
+    def _ensure_prompt_compat_entries(self) -> None:
+        skip_names = {".git", "__pycache__", "temp", "work", "logs", "requests", "ipc"}
+        ga_root = Path(self.ga_root)
+        for source in ga_root.iterdir():
+            if source.name in skip_names:
+                continue
+            target = self.session_dir / source.name
+            if target.exists() or target.is_symlink():
+                continue
+            try:
+                target.symlink_to(source, target_is_directory=source.is_dir())
+            except OSError:
+                if source.is_dir():
+                    shutil.copytree(source, target, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(source, target)
 
     def _base_env(self) -> dict[str, str]:
         env = os.environ.copy()
