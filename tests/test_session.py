@@ -237,6 +237,27 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(controller.abort_calls, 0)
             self.assertEqual(client.sent_text, [])
 
+    def test_session_dir_stays_compact_for_long_session_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            long_key = "ctx-" + ("非常长的会话标识" * 40)
+            session = SessionActor(long_key, cfg, client)
+            self.assertEqual(session.session_key, long_key)
+            self.assertLessEqual(len(session.session_dir.name), 48)
+            self.assertTrue((cfg.storage.root / "sessions" / session.session_dir.name).exists())
+
+    def test_session_dir_names_do_not_collide_for_long_keys_with_same_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            prefix = "ctx-" + ("a" * 140)
+            session_a = SessionActor(prefix + "-alpha", cfg, client)
+            session_b = SessionActor(prefix + "-beta", cfg, client)
+            self.assertNotEqual(session_a.session_dir, session_b.session_dir)
+            self.assertTrue(session_a.session_dir.exists())
+            self.assertTrue(session_b.session_dir.exists())
+
     def test_send_generated_files_accepts_windows_style_file_ref(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(tmp)

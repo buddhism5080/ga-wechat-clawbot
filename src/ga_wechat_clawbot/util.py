@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import ntpath
 import os
@@ -79,6 +80,15 @@ def safe_slug(value: str, max_len: int = 120) -> str:
         cleaned.append(ch if ch.isalnum() or ch in "._-" else "_")
     out = "".join(cleaned).strip("._") or "session"
     return out[:max_len]
+
+
+def compact_session_dir_name(session_key: str, max_len: int = 48, hash_len: int = 12) -> str:
+    raw = str(session_key or "")
+    digest = hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:max(8, hash_len)]
+    reserve = len(digest) + 1
+    prefix_len = max(8, max_len - reserve)
+    prefix = safe_slug(raw, max_len=prefix_len)
+    return f"{prefix}-{digest}"[:max_len]
 
 
 def portable_basename(path: str | os.PathLike[str]) -> str:

@@ -19,7 +19,7 @@ from .rendering import (
     split_markdown_chunks,
 )
 from .types import AttachmentRef
-from .util import ensure_dir, is_probably_absolute_path, portable_basename, remove_tree, safe_slug
+from .util import compact_session_dir_name, ensure_dir, is_probably_absolute_path, portable_basename, remove_tree, safe_slug
 from .wechat_client import WxClawClient
 
 FILE_HINT = "If you need to show files to user, use [FILE:filepath] in your response."
@@ -30,7 +30,7 @@ class SessionActor:
         self.session_key = session_key
         self.config = config
         self.client = client
-        self.session_dir = ensure_dir(config.storage.root / "sessions" / safe_slug(session_key))
+        self.session_dir = ensure_dir(config.storage.root / "sessions" / compact_session_dir_name(session_key))
         self.controller = GATurnController(
             config.ga.root,
             self.session_dir,
