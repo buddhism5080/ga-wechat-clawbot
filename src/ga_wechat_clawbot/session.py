@@ -309,13 +309,45 @@ class SessionRegistry:
         self.client = client
         self.sessions: dict[str, SessionActor] = {}
 
+    def _touch(self, session: SessionActor) -> SessionActor:
+        session.last_active = time.time()
+        return session
+
+    def _unique_sessions(self) -> list[SessionActor]:
+        unique: list[SessionActor] = []
+        seen: set[int] = set()
+        for session in self.sessions.values():
+            sid = id(session)
+            if sid in seen:
+                continue
+            seen.add(sid)
+            unique.append(session)
+        return unique
+
+    def find(self, session_key: str) -> SessionActor | None:
+        session = self.sessions.get(session_key)
+        return self._touch(session) if session is not None else None
+
+    def bind(self, session_key: str, session: SessionActor) -> SessionActor:
+        if session_key:
+            self.sessions[session_key] = session
+        return self._touch(session)
+
+    def find_latest_for_user(self, user_id: str, running_only: bool = False) -> SessionActor | None:
+        candidates = [
+            session for session in self._unique_sessions()
+            if session._current_user_id == user_id and (session.is_running if running_only else True)
+        ]
+        if not candidates:
+            return None
+        return self._touch(max(candidates, key=lambda session: session.last_active))
+
     def get(self, session_key: str) -> SessionActor:
         session = self.sessions.get(session_key)
         if session is None:
             session = SessionActor(session_key, self.config, self.client)
             self.sessions[session_key] = session
-        session.last_active = time.time()
-        return session
+        return self._touch(session)
 
     def evict_idle(self) -> None:
         now = time.time()

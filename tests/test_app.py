@@ -19,8 +19,12 @@ class _DummyClient:
 
 
 class _DummySession:
-    def __init__(self):
+    def __init__(self, running=False, user_id="", last_active=0, current_context_token=""):
         self.calls = []
+        self.is_running = running
+        self._current_user_id = user_id
+        self._current_context_token = current_context_token
+        self.last_active = last_active
 
     def status_text(self):
         self.calls.append(("status", None))
@@ -51,49 +55,83 @@ class _DummySession:
 
 
 class _DummyRegistry:
-    def __init__(self, session):
-        self.session = session
+    def __init__(self, sessions):
+        self.sessions = dict(sessions)
         self.last_key = None
+        self.created_keys = []
+        self.bound_keys = []
 
     def get(self, key):
         self.last_key = key
-        return self.session
+        session = self.sessions.get(key)
+        if session is None:
+            session = _DummySession()
+            self.sessions[key] = session
+            self.created_keys.append(key)
+        return session
+
+    def find(self, key):
+        self.last_key = key
+        return self.sessions.get(key)
+
+    def bind(self, key, session):
+        self.last_key = key
+        self.sessions[key] = session
+        self.bound_keys.append(key)
+        return session
+
+    def find_latest_for_user(self, user_id, running_only=False):
+        candidates = []
+        seen = set()
+        for session in self.sessions.values():
+            sid = id(session)
+            if sid in seen:
+                continue
+            seen.add(sid)
+            if session._current_user_id == user_id and (session.is_running if running_only else True):
+                candidates.append(session)
+        if not candidates:
+            return None
+        return max(candidates, key=lambda session: session.last_active)
 
 
 class AppTests(unittest.TestCase):
-    def _app(self, session=None):
+    def _app(self, sessions=None):
         app = WeChatApp.__new__(WeChatApp)
         app.config = SimpleNamespace(wechat=SimpleNamespace(allowed_users=set()))
         app.client = _DummyClient()
-        app.sessions = _DummyRegistry(session or _DummySession())
+        base_sessions = sessions or {"ctx-1": _DummySession()}
+        app.sessions = _DummyRegistry(base_sessions)
         return app
 
-    def _message(self, text):
+    def _message(self, text, context_token="ctx-1"):
         return InboundMessage(
             message_id=1,
             from_user_id="u1",
             to_user_id="bot",
-            context_token="ctx-1",
+            context_token=context_token,
             text=text,
             attachments=[],
             raw={},
         )
 
     def test_help_alias_commands(self):
-        app = self._app()
+        app = self._app({})
         app.handle_message(self._message("/commands"))
         self.assertEqual(app.client.sent_text[-1][2], HELP_TEXT)
+        self.assertEqual(app.sessions.created_keys, [])
 
     def test_unknown_command_shows_error_and_help(self):
-        app = self._app()
+        app = self._app({})
         app.handle_message(self._message("/wat"))
         reply = app.client.sent_text[-1][2]
         self.assertIn("未知命令", reply)
         self.assertIn("/help", reply)
+        self.assertEqual(app.sessions.created_keys, [])
 
     def test_llm_subcommands(self):
-        session = _DummySession()
-        app = self._app(session)
+        session = _DummySession(user_id="u1", last_active=10)
+        app = self._app({"ctx-1": session})
 
         app.handle_message(self._message("/llm current"))
         self.assertEqual(app.client.sent_text[-1][2], "LLM CURRENT")
@@ -103,11 +141,69 @@ class AppTests(unittest.TestCase):
         self.assertIn(("llm-switch", 2), session.calls)
 
     def test_reset_alias(self):
-        session = _DummySession()
-        app = self._app(session)
+        session = _DummySession(user_id="u1", last_active=10)
+        app = self._app({"ctx-1": session})
         app.handle_message(self._message("/reset"))
         self.assertEqual(app.client.sent_text[-1][2], "RESET")
         self.assertIn(("reset", None), session.calls)
+
+    def test_commands_without_context_token_reuse_latest_session(self):
+        session = _DummySession(user_id="u1", last_active=10, current_context_token="ctx-1")
+        app = self._app({"ctx-1": session})
+        app.handle_message(self._message("/status", context_token=""))
+        self.assertEqual(app.client.sent_text[-1][1], "ctx-1")
+        self.assertEqual(app.client.sent_text[-1][2], "STATUS")
+        app.handle_message(self._message("/llm current", context_token=""))
+        self.assertEqual(app.client.sent_text[-1][1], "ctx-1")
+        self.assertEqual(app.client.sent_text[-1][2], "LLM CURRENT")
+        app.handle_message(self._message("/new", context_token=""))
+        self.assertEqual(app.client.sent_text[-1][1], "ctx-1")
+        self.assertEqual(app.client.sent_text[-1][2], "RESET")
+
+    def test_stop_falls_back_to_running_session_for_same_user(self):
+        running_session = _DummySession(running=True, user_id="u1", last_active=10, current_context_token="ctx-1")
+        idle_session = _DummySession(running=False, user_id="u1", last_active=1)
+        app = self._app({"ctx-1": running_session, "u1": idle_session})
+        app.handle_message(self._message("/stop", context_token=""))
+        self.assertEqual(app.client.sent_text[-1][1], "ctx-1")
+        self.assertEqual(app.client.sent_text[-1][2], "STOP")
+        self.assertIn(("stop", None), running_session.calls)
+        self.assertNotIn(("stop", None), idle_session.calls)
+        self.assertEqual(app.sessions.created_keys, [])
+
+    def test_commands_without_session_do_not_create_one(self):
+        app = self._app({})
+        app.handle_message(self._message("/status", context_token=""))
+        self.assertIn("没有活动会话", app.client.sent_text[-1][2])
+        app.handle_message(self._message("/llm", context_token=""))
+        self.assertIn("还没有活动会话", app.client.sent_text[-1][2])
+        app.handle_message(self._message("/new", context_token=""))
+        self.assertIn("没有可清空的会话", app.client.sent_text[-1][2])
+        app.handle_message(self._message("/stop", context_token=""))
+        self.assertIn("没有正在运行的任务", app.client.sent_text[-1][2])
+        self.assertEqual(app.sessions.created_keys, [])
+
+    def test_message_without_context_token_reuses_running_session(self):
+        running_session = _DummySession(running=True, user_id="u1", last_active=10)
+        app = self._app({"ctx-1": running_session})
+        app.handle_message(self._message("继续", context_token=""))
+        self.assertIn(("submit", "继续", 0), running_session.calls)
+        self.assertEqual(app.sessions.created_keys, [])
+
+    def test_plain_message_creates_session_when_none_exists(self):
+        app = self._app({})
+        app.handle_message(self._message("开始", context_token=""))
+        created = app.sessions.sessions["u1"]
+        self.assertIn(("submit", "开始", 0), created.calls)
+        self.assertEqual(app.sessions.created_keys, ["u1"])
+
+    def test_message_with_context_token_reuses_user_session_and_binds_alias(self):
+        user_session = _DummySession(user_id="u1", last_active=10)
+        app = self._app({"u1": user_session})
+        app.handle_message(self._message("你好", context_token="ctx-1"))
+        self.assertIn(("submit", "你好", 0), user_session.calls)
+        self.assertEqual(app.sessions.bound_keys, ["ctx-1"])
+        self.assertEqual(app.sessions.created_keys, [])
 
 
 if __name__ == "__main__":

@@ -57,6 +57,10 @@ class WeChatApp:
     def reply(self, user_id: str, context_token: str, text: str) -> None:
         self.client.send_text(user_id, text, context_token=context_token)
 
+    def _reply_for_session(self, message, session, text: str) -> None:
+        context_token = message.context_token or getattr(session, "_current_context_token", "")
+        self.reply(message.from_user_id, context_token, text)
+
     def _handle_llm_command(self, session, args: list[str]) -> str:
         if not args or args[0].lower() in {"list", "ls"}:
             return session.list_llms_text()
@@ -79,21 +83,79 @@ class WeChatApp:
             return LLM_USAGE
         return session.switch_llm(llm_no)
 
-    def handle_command(self, session, message, text: str) -> None:
+    def _bind_message_session(self, message, session):
+        if message.context_token:
+            return self.sessions.bind(message.context_token, session)
+        if message.from_user_id:
+            return self.sessions.bind(message.from_user_id, session)
+        return session
+
+    def _resolve_message_session(self, message):
+        if message.context_token:
+            direct = self.sessions.find(message.context_token)
+            if direct is not None:
+                return direct
+            running = self.sessions.find_latest_for_user(message.from_user_id, running_only=True) if message.from_user_id else None
+            if running is not None:
+                return self._bind_message_session(message, running)
+            user_session = self.sessions.find(message.from_user_id) if message.from_user_id else None
+            if user_session is not None:
+                return self._bind_message_session(message, user_session)
+            return self.sessions.get(message.context_token)
+        if message.from_user_id:
+            running = self.sessions.find_latest_for_user(message.from_user_id, running_only=True)
+            if running is not None:
+                return running
+            direct = self.sessions.find(message.from_user_id)
+            if direct is not None:
+                return direct
+            return self.sessions.get(message.from_user_id)
+        return self.sessions.get(f"msg-{message.message_id}")
+
+    def _resolve_command_session(self, message, op: str):
+        direct = self.sessions.find(message.context_token) if message.context_token else None
+        if op == "/stop":
+            if direct is not None and direct.is_running:
+                return self._bind_message_session(message, direct)
+            fallback = self.sessions.find_latest_for_user(message.from_user_id, running_only=True) if message.from_user_id else None
+            return self._bind_message_session(message, fallback) if fallback is not None else direct
+        if op in {"/status", "/new", "/llm"}:
+            fallback = self.sessions.find_latest_for_user(message.from_user_id, running_only=False) if message.from_user_id else None
+            target = direct or fallback
+            return self._bind_message_session(message, target) if target is not None else None
+        return direct
+
+    def _missing_session_reply(self, op: str) -> str:
+        if op == "/stop":
+            return "ℹ️ 当前没有正在运行的任务。"
+        if op == "/new":
+            return "ℹ️ 当前没有可清空的会话。先发送一条普通消息开始。"
+        if op == "/status":
+            return "ℹ️ 当前没有活动会话。先发送一条普通消息开始。"
+        if op == "/llm":
+            return "ℹ️ 当前还没有活动会话。先发送一条普通消息开始，再使用 /llm。"
+        return "ℹ️ 当前没有可用会话。"
+
+    def handle_command(self, message, text: str) -> None:
         parts = text.split()
         raw_op = parts[0] if parts else ""
         op = self._normalize_command_name(raw_op)
         args = parts[1:]
         if op == "/help":
             self.reply(message.from_user_id, message.context_token, HELP_TEXT)
-        elif op == "/status":
-            self.reply(message.from_user_id, message.context_token, session.status_text())
+            return
+        session = self._resolve_command_session(message, op)
+        if session is None:
+            self.reply(message.from_user_id, message.context_token, self._missing_session_reply(op))
+            return
+        if op == "/status":
+            self._reply_for_session(message, session, session.status_text())
         elif op == "/stop":
-            self.reply(message.from_user_id, message.context_token, session.stop())
+            self._reply_for_session(message, session, session.stop())
         elif op == "/new":
-            self.reply(message.from_user_id, message.context_token, session.reset())
+            self._reply_for_session(message, session, session.reset())
         elif op == "/llm":
-            self.reply(message.from_user_id, message.context_token, self._handle_llm_command(session, args))
+            self._reply_for_session(message, session, self._handle_llm_command(session, args))
         else:
             self.reply(message.from_user_id, message.context_token, f"⚠️ 未知命令：{raw_op}\n\n{HELP_TEXT}")
 
@@ -101,13 +163,13 @@ class WeChatApp:
         if not self.is_allowed(message.from_user_id):
             print(f"[WeChatApp] unauthorized user={message.from_user_id}")
             return
-        session = self.sessions.get(self.session_key(message))
         text = (message.text or "").strip()
         if text.startswith("/"):
-            self.handle_command(session, message, text)
+            self.handle_command(message, text)
             return
         if not text and not message.attachments:
             return
+        session = self._resolve_message_session(message)
         session.submit_turn(message.from_user_id, message.context_token, text, message.attachments)
 
     def run_forever(self) -> None:
