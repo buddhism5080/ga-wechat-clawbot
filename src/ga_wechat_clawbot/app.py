@@ -13,9 +13,9 @@ HELP_TEXT = """📖 微信前端命令
 /llm current - 查看当前模型
 /llm N 或 /llm set N - 切换到第 N 个模型
 /stop 或 /abort - 停止当前任务
-/new 或 /reset - 清空当前会话上下文
+/new 或 /reset 或 /clear - 新建一个干净会话
 
-会话默认复用同一用户的当前 session；收到新的 `context_token` 时会绑定回该 session。""".strip()
+会话默认复用同一用户的当前 session；收到新的 `context_token` 时会绑定回该 session。发送 `/new` 可显式切到新的 session。""".strip()
 
 LLM_USAGE = "用法：/llm、/llm current、/llm N、/llm set N"
 COMMAND_ALIASES = {
@@ -90,6 +90,30 @@ class WeChatApp:
             session = self.sessions.bind(message.from_user_id, session)
         return session
 
+    def _create_new_session(self, message, previous=None):
+        route_context = message.context_token or getattr(previous, "_current_context_token", "")
+        route_user = message.from_user_id or getattr(previous, "_current_user_id", "")
+        if previous is not None:
+            previous.reset()
+        hint = route_user or route_context or self.session_key(message)
+        session = self.sessions.create_fresh(
+            hint,
+            previous=previous,
+            bind_keys=[route_context, route_user],
+        )
+        session._current_user_id = route_user
+        session._current_context_token = route_context
+        return session
+
+    @staticmethod
+    def _new_session_reply_text(previous, session) -> str:
+        old_key = getattr(previous, "session_key", "") if previous is not None else ""
+        if previous is None:
+            return f"🆕 已新建会话：`{session.session_key}`\n后续普通消息会进入这个新会话。"
+        if old_key and old_key != session.session_key:
+            return f"🆕 已新建会话：`{session.session_key}`\n上一会话：`{old_key}`\n后续普通消息会进入这个新会话。"
+        return f"🆕 已新建会话：`{session.session_key}`\n后续普通消息会进入这个新会话。"
+
     def _resolve_message_session(self, message):
         if message.context_token:
             direct = self.sessions.find(message.context_token)
@@ -147,6 +171,11 @@ class WeChatApp:
         if op not in {"/status", "/stop", "/new", "/llm"}:
             self.reply(message.from_user_id, message.context_token, f"⚠️ 未知命令：{raw_op}\n\n{HELP_TEXT}")
             return
+        if op == "/new":
+            previous = self._resolve_command_session(message, op)
+            session = self._create_new_session(message, previous)
+            self._reply_for_session(message, session, self._new_session_reply_text(previous, session))
+            return
         session = self._resolve_command_session(message, op)
         if session is None:
             self.reply(message.from_user_id, message.context_token, self._missing_session_reply(op))
@@ -155,8 +184,6 @@ class WeChatApp:
             self._reply_for_session(message, session, session.status_text())
         elif op == "/stop":
             self._reply_for_session(message, session, session.stop())
-        elif op == "/new":
-            self._reply_for_session(message, session, session.reset())
         elif op == "/llm":
             self._reply_for_session(message, session, self._handle_llm_command(session, args))
         else:

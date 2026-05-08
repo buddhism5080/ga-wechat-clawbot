@@ -263,7 +263,7 @@ def render_abort_message(reason: str = "", timed_out: bool = False) -> str:
     clean_reason = _compact_text(reason, max_len=180)
     if clean_reason:
         lines.extend(["", f"- 原因：{clean_reason}"])
-    lines.extend(["", "你可以直接继续补充消息，或发送 `/new` 清空当前会话。"])
+    lines.extend(["", "你可以直接继续补充消息，或发送 `/new` 切到一个新的干净会话。"])
     return "\n".join(lines).strip()
 
 
@@ -283,7 +283,7 @@ def render_error_message(message: str, traceback_text: str = "") -> str:
     excerpt = _traceback_excerpt(traceback_text)
     if excerpt:
         lines.extend(["", "```text", excerpt, "```"])
-    lines.extend(["", "可发送 `/status` 查看当前状态，或发送 `/new` 清空当前会话后重试。"])
+    lines.extend(["", "可发送 `/status` 查看当前状态，或发送 `/new` 切到新的干净会话后重试。"])
     return "\n".join(lines).strip()
 
 

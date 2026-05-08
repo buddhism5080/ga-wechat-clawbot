@@ -262,7 +262,7 @@ class SessionActor:
             current_name = f"读取失败: {exc}"
             current_idx = "?"
         status = "🔴 运行中" if self.is_running else "🟢 空闲"
-        hint = "\n提示: 可发送 `/stop` 中止当前任务。" if self.is_running else "\n提示: 可发送 `/new` 清空当前上下文。"
+        hint = "\n提示: 可发送 `/stop` 中止当前任务。" if self.is_running else "\n提示: 可发送 `/new` 新建一个干净会话。"
         return f"会话: `{self.session_key}`\n状态: {status}\nLLM: [{current_idx}] {current_name}{hint}"
 
     def current_llm_text(self) -> str:
@@ -333,6 +333,26 @@ class SessionRegistry:
     def bind(self, session_key: str, session: SessionActor) -> SessionActor:
         if session_key:
             self.sessions[session_key] = session
+        return self._touch(session)
+
+    def create_fresh(
+        self,
+        session_key_hint: str,
+        previous: SessionActor | None = None,
+        bind_keys: Sequence[str] = (),
+    ) -> SessionActor:
+        session_key = f"{safe_slug(session_key_hint or 'session', max_len=48)}-{time.time_ns():x}"
+        session = SessionActor(session_key, self.config, self.client)
+        if previous is not None:
+            session._current_user_id = previous._current_user_id
+            session._current_context_token = previous._current_context_token
+            for key, existing in list(self.sessions.items()):
+                if existing is previous:
+                    self.sessions[key] = session
+        self.sessions[session_key] = session
+        for key in bind_keys:
+            if key:
+                self.sessions[key] = session
         return self._touch(session)
 
     def find_latest_for_user(self, user_id: str, running_only: bool = False) -> SessionActor | None:

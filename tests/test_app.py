@@ -19,12 +19,13 @@ class _DummyClient:
 
 
 class _DummySession:
-    def __init__(self, running=False, user_id="", last_active=0, current_context_token=""):
+    def __init__(self, running=False, user_id="", last_active=0, current_context_token="", session_key="dummy-session"):
         self.calls = []
         self.is_running = running
         self._current_user_id = user_id
         self._current_context_token = current_context_token
         self.last_active = last_active
+        self.session_key = session_key
 
     def status_text(self):
         self.calls.append(("status", None))
@@ -63,6 +64,7 @@ class _DummyRegistry:
         self.last_key = None
         self.created_keys = []
         self.bound_keys = []
+        self.fresh_counter = 0
 
     def get(self, key):
         self.last_key = key
@@ -81,6 +83,24 @@ class _DummyRegistry:
         self.last_key = key
         self.sessions[key] = session
         self.bound_keys.append(key)
+        return session
+
+    def create_fresh(self, session_key_hint, previous=None, bind_keys=()):
+        self.fresh_counter += 1
+        key = f"fresh-{self.fresh_counter}"
+        session = _DummySession(session_key=key)
+        if previous is not None:
+            session._current_user_id = previous._current_user_id
+            session._current_context_token = previous._current_context_token
+            for existing_key, existing_session in list(self.sessions.items()):
+                if existing_session is previous:
+                    self.sessions[existing_key] = session
+        self.sessions[key] = session
+        for bind_key in bind_keys:
+            if bind_key:
+                self.sessions[bind_key] = session
+                self.bound_keys.append(bind_key)
+        self.created_keys.append(key)
         return session
 
     def find_latest_for_user(self, user_id, running_only=False):
@@ -147,8 +167,18 @@ class AppTests(unittest.TestCase):
         session = _DummySession(user_id="u1", last_active=10)
         app = self._app({"ctx-1": session})
         app.handle_message(self._message("/reset"))
-        self.assertEqual(app.client.sent_text[-1][2], "RESET")
+        self.assertIn("已新建会话", app.client.sent_text[-1][2])
         self.assertIn(("reset", None), session.calls)
+        self.assertIsNot(app.sessions.sessions["ctx-1"], session)
+        self.assertIs(app.sessions.sessions["ctx-1"], app.sessions.sessions["u1"])
+
+    def test_clear_alias_creates_fresh_session(self):
+        session = _DummySession(user_id="u1", last_active=10)
+        app = self._app({"ctx-1": session})
+        app.handle_message(self._message("/clear"))
+        self.assertIn("已新建会话", app.client.sent_text[-1][2])
+        self.assertIn(("reset", None), session.calls)
+        self.assertIsNot(app.sessions.sessions["ctx-1"], session)
 
     def test_commands_without_context_token_reuse_latest_session(self):
         session = _DummySession(user_id="u1", last_active=10, current_context_token="ctx-1")
@@ -159,9 +189,18 @@ class AppTests(unittest.TestCase):
         app.handle_message(self._message("/llm current", context_token=""))
         self.assertEqual(app.client.sent_text[-1][1], "ctx-1")
         self.assertEqual(app.client.sent_text[-1][2], "LLM CURRENT")
+
+    def test_new_without_context_token_creates_fresh_session_from_latest_session(self):
+        session = _DummySession(user_id="u1", last_active=10, current_context_token="ctx-1")
+        app = self._app({"ctx-1": session, "u1": session})
         app.handle_message(self._message("/new", context_token=""))
         self.assertEqual(app.client.sent_text[-1][1], "ctx-1")
-        self.assertEqual(app.client.sent_text[-1][2], "RESET")
+        self.assertIn("已新建会话", app.client.sent_text[-1][2])
+        self.assertIn(("reset", None), session.calls)
+        fresh = app.sessions.sessions["u1"]
+        self.assertIs(app.sessions.sessions["ctx-1"], fresh)
+        self.assertIsNot(fresh, session)
+        self.assertEqual(app.sessions.created_keys, ["fresh-1"])
 
     def test_stop_falls_back_to_running_session_for_same_user(self):
         running_session = _DummySession(running=True, user_id="u1", last_active=10, current_context_token="ctx-1")
@@ -180,11 +219,19 @@ class AppTests(unittest.TestCase):
         self.assertIn("没有活动会话", app.client.sent_text[-1][2])
         app.handle_message(self._message("/llm", context_token=""))
         self.assertIn("还没有活动会话", app.client.sent_text[-1][2])
-        app.handle_message(self._message("/new", context_token=""))
-        self.assertIn("没有可清空的会话", app.client.sent_text[-1][2])
         app.handle_message(self._message("/stop", context_token=""))
         self.assertIn("没有正在运行的任务", app.client.sent_text[-1][2])
         self.assertEqual(app.sessions.created_keys, [])
+
+    def test_new_without_existing_session_creates_one_immediately(self):
+        app = self._app({})
+        app.handle_message(self._message("/new", context_token=""))
+        self.assertIn("已新建会话", app.client.sent_text[-1][2])
+        self.assertEqual(app.sessions.created_keys, ["fresh-1"])
+        fresh = app.sessions.sessions["u1"]
+        app.handle_message(self._message("开始", context_token=""))
+        self.assertIn(("submit", "开始", 0), fresh.calls)
+        self.assertEqual(app.sessions.created_keys, ["fresh-1"])
 
     def test_message_without_context_token_reuses_running_session(self):
         running_session = _DummySession(running=True, user_id="u1", last_active=10, current_context_token="ctx-1")
