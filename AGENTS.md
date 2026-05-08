@@ -7,7 +7,7 @@ This repo is a standalone integration layer around GenericAgent. Do not modify t
 - Treat GenericAgent as an upstream dependency located at a configured `ga.root` path.
 - Prefer subprocess/helper-process boundaries over in-place monkeypatching of upstream files.
 - Keep WeChat transport, rendering, and session logic inside this repo.
-- Preserve `context_token`-scoped isolation.
+- Preserve conservative per-user session reuse; treat `context_token` as an alias/binding hint when present, not as a reason to spawn blind new sessions.
 
 ## Verification
 Before claiming success:

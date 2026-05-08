@@ -5,7 +5,7 @@ The upstream GenericAgent repository is treated as **read-only**. This project d
 
 ## Turn execution model
 1. WeChat message arrives.
-2. Session key is derived from `context_token`.
+2. Parent process resolves the session conservatively: reuse the same user's existing session when possible; bind a new `context_token` back to that session when provided.
 3. Parent process builds a prompt and launches a **one-turn helper subprocess**.
 4. Helper subprocess imports GenericAgent from the configured upstream path.
 5. Helper restores prior session state (`backend_history`, `history_info`, working memory).
@@ -15,7 +15,7 @@ The upstream GenericAgent repository is treated as **read-only**. This project d
 
 ## Why this model
 - no upstream repo modifications
-- strong per-session isolation
+- stable per-user session continuity even when `context_token` changes or disappears
 - easy stop/reset semantics
 - state survives worker restarts
 - parent process can kill a stuck turn without corrupting the main server

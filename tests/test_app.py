@@ -51,6 +51,9 @@ class _DummySession:
         return f"LLM SWITCH {llm_no}"
 
     def submit_turn(self, user_id, context_token, text, attachments):
+        self._current_user_id = user_id
+        if context_token:
+            self._current_context_token = context_token
         self.calls.append(("submit", text, len(attachments)))
 
 
@@ -100,7 +103,7 @@ class AppTests(unittest.TestCase):
         app = WeChatApp.__new__(WeChatApp)
         app.config = SimpleNamespace(wechat=SimpleNamespace(allowed_users=set()))
         app.client = _DummyClient()
-        base_sessions = sessions or {"ctx-1": _DummySession()}
+        base_sessions = {"ctx-1": _DummySession()} if sessions is None else sessions
         app.sessions = _DummyRegistry(base_sessions)
         return app
 
@@ -184,11 +187,12 @@ class AppTests(unittest.TestCase):
         self.assertEqual(app.sessions.created_keys, [])
 
     def test_message_without_context_token_reuses_running_session(self):
-        running_session = _DummySession(running=True, user_id="u1", last_active=10)
+        running_session = _DummySession(running=True, user_id="u1", last_active=10, current_context_token="ctx-1")
         app = self._app({"ctx-1": running_session})
         app.handle_message(self._message("继续", context_token=""))
         self.assertIn(("submit", "继续", 0), running_session.calls)
         self.assertEqual(app.sessions.created_keys, [])
+        self.assertEqual(app.sessions.bound_keys, ["u1"])
 
     def test_plain_message_creates_session_when_none_exists(self):
         app = self._app({})
@@ -196,14 +200,25 @@ class AppTests(unittest.TestCase):
         created = app.sessions.sessions["u1"]
         self.assertIn(("submit", "开始", 0), created.calls)
         self.assertEqual(app.sessions.created_keys, ["u1"])
+        self.assertEqual(app.sessions.bound_keys, ["u1"])
 
     def test_message_with_context_token_reuses_user_session_and_binds_alias(self):
         user_session = _DummySession(user_id="u1", last_active=10)
         app = self._app({"u1": user_session})
         app.handle_message(self._message("你好", context_token="ctx-1"))
         self.assertIn(("submit", "你好", 0), user_session.calls)
-        self.assertEqual(app.sessions.bound_keys, ["ctx-1"])
+        self.assertEqual(app.sessions.bound_keys, ["ctx-1", "u1"])
         self.assertEqual(app.sessions.created_keys, [])
+
+    def test_second_message_with_new_context_token_reuses_existing_session(self):
+        app = self._app({})
+        app.handle_message(self._message("第一句", context_token="ctx-1"))
+        first = app.sessions.sessions["ctx-1"]
+        app.handle_message(self._message("第二句", context_token="ctx-2"))
+        self.assertIs(app.sessions.sessions["ctx-2"], first)
+        self.assertIs(app.sessions.sessions["u1"], first)
+        self.assertEqual(app.sessions.created_keys, ["ctx-1"])
+        self.assertEqual(first.calls[-1], ("submit", "第二句", 0))
 
 
 if __name__ == "__main__":

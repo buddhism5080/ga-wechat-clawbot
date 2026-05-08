@@ -85,6 +85,16 @@ class SessionTests(unittest.TestCase):
             self.assertIn("transcript=你好", prompt)
             self.assertEqual(images, [str(image_path)])
 
+    def test_submit_turn_without_context_token_preserves_existing_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            session.controller = _FakeController()
+            session._current_context_token = "ctx-token"
+            session.submit_turn("u1", "", "继续", [])
+            self.assertEqual(session._current_context_token, "ctx-token")
+
     def test_busy_session_steers_running_turn(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(tmp)
@@ -93,7 +103,9 @@ class SessionTests(unittest.TestCase):
             controller = _FakeController()
             controller.running = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
             session.controller = controller
-            session.submit_turn("u1", "ctx-token", "hello", [])
+            session._current_context_token = "ctx-token"
+            session.submit_turn("u1", "", "hello", [])
+            self.assertEqual(session._current_context_token, "ctx-token")
             self.assertIn("已插入当前任务", client.sent_text[-1][2])
             self.assertIn("hello", controller.interventions[-1])
 

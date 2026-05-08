@@ -130,7 +130,8 @@ class SessionActor:
 
     def _steer_running_turn(self, user_id: str, context_token: str, text: str, attachments: Sequence[AttachmentRef]) -> bool:
         self._current_user_id = user_id
-        self._current_context_token = context_token
+        if context_token:
+            self._current_context_token = context_token
         self._current_inbound_paths.update(os.path.realpath(att.path) for att in attachments if att.path)
         message = self.build_intervention_prompt(text, attachments)
         with self._intervention_lock:
@@ -157,7 +158,8 @@ class SessionActor:
             return
         self._clear_pending_interventions()
         self._current_user_id = user_id
-        self._current_context_token = context_token
+        if context_token:
+            self._current_context_token = context_token
         self._current_inbound_paths = {os.path.realpath(att.path) for att in attachments if att.path}
         self._saw_ask_user = False
         self._saw_error = False

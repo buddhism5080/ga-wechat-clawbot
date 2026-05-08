@@ -4,7 +4,7 @@ Standalone WeChat Clawbot / iLink integration for **GenericAgent** that keeps th
 
 ## Goals
 - no edits to the upstream GenericAgent repo
-- isolated sessions by `context_token`
+- conservative session reuse per user; `context_token` is rebound as an alias when available
 - clean markdown rendering for Clawbot
 - text / image / voice / file / video send+receive
 - strong session orchestration, stop/reset, and persisted state
@@ -37,7 +37,7 @@ ga-wechat-clawbot --config config.toml serve
 - `/llm current` — show the current model
 - `/llm N` or `/llm set N` — switch to model `N`
 - `/stop` / `/abort` — stop the in-flight task
-- `/new` / `/reset` / `/clear` — clear the current `context_token` session
+- `/new` / `/reset` / `/clear` — clear the current session and keep future messages on the same reused session path
 
 ## Doctor
 ```bash

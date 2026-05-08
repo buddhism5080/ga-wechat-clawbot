@@ -15,7 +15,7 @@ HELP_TEXT = """📖 微信前端命令
 /stop 或 /abort - 停止当前任务
 /new 或 /reset - 清空当前会话上下文
 
-会话按 context_token 强隔离。""".strip()
+会话默认复用同一用户的当前 session；收到新的 `context_token` 时会绑定回该 session。""".strip()
 
 LLM_USAGE = "用法：/llm、/llm current、/llm N、/llm set N"
 COMMAND_ALIASES = {
@@ -85,9 +85,9 @@ class WeChatApp:
 
     def _bind_message_session(self, message, session):
         if message.context_token:
-            return self.sessions.bind(message.context_token, session)
+            session = self.sessions.bind(message.context_token, session)
         if message.from_user_id:
-            return self.sessions.bind(message.from_user_id, session)
+            session = self.sessions.bind(message.from_user_id, session)
         return session
 
     def _resolve_message_session(self, message):
@@ -101,15 +101,15 @@ class WeChatApp:
             user_session = self.sessions.find(message.from_user_id) if message.from_user_id else None
             if user_session is not None:
                 return self._bind_message_session(message, user_session)
-            return self.sessions.get(message.context_token)
+            return self._bind_message_session(message, self.sessions.get(message.context_token))
         if message.from_user_id:
             running = self.sessions.find_latest_for_user(message.from_user_id, running_only=True)
             if running is not None:
-                return running
+                return self._bind_message_session(message, running)
             direct = self.sessions.find(message.from_user_id)
             if direct is not None:
-                return direct
-            return self.sessions.get(message.from_user_id)
+                return self._bind_message_session(message, direct)
+            return self._bind_message_session(message, self.sessions.get(message.from_user_id))
         return self.sessions.get(f"msg-{message.message_id}")
 
     def _resolve_command_session(self, message, op: str):
@@ -143,6 +143,9 @@ class WeChatApp:
         args = parts[1:]
         if op == "/help":
             self.reply(message.from_user_id, message.context_token, HELP_TEXT)
+            return
+        if op not in {"/status", "/stop", "/new", "/llm"}:
+            self.reply(message.from_user_id, message.context_token, f"⚠️ 未知命令：{raw_op}\n\n{HELP_TEXT}")
             return
         session = self._resolve_command_session(message, op)
         if session is None:
