@@ -110,6 +110,7 @@ def apply_saved_state(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 def run_turn(
     ga_root: str | os.PathLike[str],
     session_dir: str | os.PathLike[str],
+    work_dir: str | os.PathLike[str],
     state_path: str | os.PathLike[str],
     prompt: str,
     images: Sequence[str],
@@ -118,7 +119,7 @@ def run_turn(
 ) -> int:
     runtime = bootstrap_ga(ga_root)
     session_dir = Path(session_dir)
-    work_dir = ensure_dir(session_dir / "work")
+    work_dir = ensure_dir(work_dir)
     log_dir = ensure_dir(session_dir / "logs")
     state = load_state(state_path)
     agent = runtime.agentmain.GeneraticAgent()

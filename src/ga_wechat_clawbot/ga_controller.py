@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -12,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .util import atomic_write_json, atomic_write_text, ensure_dir, hidden_windows_subprocess_kwargs
+from .util import atomic_write_json, atomic_write_text, ensure_dir, hidden_windows_subprocess_kwargs, remove_tree
 
 
 @dataclass
@@ -25,36 +24,24 @@ class RunningTurn:
 
 
 class GATurnController:
+    _root_registry_lock = threading.Lock()
+    _workspace_registry_lock = threading.Lock()
+    _active_by_root: dict[str, "GATurnController"] = {}
+    _workspace_locks: dict[str, threading.Lock] = {}
+
     def __init__(self, ga_root: str | os.PathLike[str], session_dir: str | os.PathLike[str], python_executable: str = sys.executable, default_llm_no: int = 0) -> None:
         self.ga_root = str(Path(ga_root).resolve())
         self.session_dir = ensure_dir(session_dir)
         self.python_executable = python_executable
         self.default_llm_no = int(default_llm_no)
+        self.work_dir = ensure_dir(Path(self.ga_root) / "temp")
         self.state_path = self.session_dir / "ga_state.json"
         self.requests_dir = ensure_dir(self.session_dir / "requests")
         self.ipc_dir = ensure_dir(self.session_dir / "ipc")
         self.running: RunningTurn | None = None
         self._lock = threading.Lock()
         self._src_root = Path(__file__).resolve().parents[2] / "src"
-        self._ensure_prompt_compat_entries()
         self._ensure_default_state()
-
-    def _ensure_prompt_compat_entries(self) -> None:
-        skip_names = {".git", "__pycache__", "temp", "work", "logs", "requests", "ipc"}
-        ga_root = Path(self.ga_root)
-        for source in ga_root.iterdir():
-            if source.name in skip_names:
-                continue
-            target = self.session_dir / source.name
-            if target.exists() or target.is_symlink():
-                continue
-            try:
-                target.symlink_to(source, target_is_directory=source.is_dir())
-            except OSError:
-                if source.is_dir():
-                    shutil.copytree(source, target, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(source, target)
 
     def _base_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -68,6 +55,31 @@ class GATurnController:
         if self.state_path.exists():
             return
         atomic_write_json(self.state_path, {"llm_no": self.default_llm_no})
+
+    def _claim_active_root(self) -> None:
+        with self._root_registry_lock:
+            owner = self._active_by_root.get(self.ga_root)
+            if owner is not None and owner is not self:
+                running = getattr(owner, "running", None)
+                if running is not None and running.process.poll() is None:
+                    raise RuntimeError("another turn already running for this ga_root")
+            self._active_by_root[self.ga_root] = self
+
+    def _workspace_lock(self) -> threading.Lock:
+        with self._workspace_registry_lock:
+            lock = self._workspace_locks.get(self.ga_root)
+            if lock is None:
+                lock = threading.Lock()
+                self._workspace_locks[self.ga_root] = lock
+            return lock
+
+    def _release_active_root(self, process: subprocess.Popen[str] | None = None) -> None:
+        with self._root_registry_lock:
+            owner = self._active_by_root.get(self.ga_root)
+            if owner is self:
+                current = getattr(self, "running", None)
+                if process is None or current is None or current.process is process or process.poll() is not None:
+                    self._active_by_root.pop(self.ga_root, None)
 
     def _run_probe(self, *args: str) -> dict:
         cmd = [
@@ -88,7 +100,7 @@ class GATurnController:
             encoding="utf-8",
             errors="replace",
             env=self._base_env(),
-            cwd=str(self.session_dir),
+            cwd=self.ga_root,
             **hidden_windows_subprocess_kwargs(),
         )
         if proc.returncode != 0:
@@ -105,6 +117,17 @@ class GATurnController:
     def reset_state(self) -> None:
         self._run_probe("reset-state")
 
+    def reset_work_dir(self) -> None:
+        workspace_lock = self._workspace_lock()
+        acquired = workspace_lock.acquire(timeout=2)
+        if not acquired:
+            return
+        try:
+            remove_tree(self.work_dir)
+            ensure_dir(self.work_dir)
+        finally:
+            workspace_lock.release()
+
     def start_turn(
         self,
         prompt: str,
@@ -115,40 +138,51 @@ class GATurnController:
         with self._lock:
             if self.running is not None and self.running.process.poll() is None:
                 raise RuntimeError("turn already running")
-            request_id = uuid.uuid4().hex[:12]
-            request_dir = ensure_dir(self.requests_dir / request_id)
-            prompt_file = request_dir / "prompt.txt"
-            images_file = request_dir / "images.json"
-            prompt_file.write_text(prompt, "utf-8")
-            images_file.write_text(json.dumps(list(images), ensure_ascii=False), "utf-8")
-            cmd = [
-                self.python_executable,
-                "-m",
-                "ga_wechat_clawbot.ga.turn_worker",
-                "--ga-root",
-                self.ga_root,
-                "--session-dir",
-                str(self.session_dir),
-                "--state-path",
-                str(self.state_path),
-                "--prompt-file",
-                str(prompt_file),
-                "--images-file",
-                str(images_file),
-            ]
-            self._ensure_default_state()
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                cwd=str(self.session_dir),
-                env=self._base_env(),
-                **hidden_windows_subprocess_kwargs(),
-            )
+            workspace_lock = self._workspace_lock()
+            if not workspace_lock.acquire(blocking=False):
+                raise RuntimeError("another turn already running for this ga_root")
+            self._claim_active_root()
+            try:
+                request_id = uuid.uuid4().hex[:12]
+                request_dir = ensure_dir(self.requests_dir / request_id)
+                prompt_file = request_dir / "prompt.txt"
+                images_file = request_dir / "images.json"
+                prompt_file.write_text(prompt, "utf-8")
+                images_file.write_text(json.dumps(list(images), ensure_ascii=False), "utf-8")
+                cmd = [
+                    self.python_executable,
+                    "-m",
+                    "ga_wechat_clawbot.ga.turn_worker",
+                    "--ga-root",
+                    self.ga_root,
+                    "--session-dir",
+                    str(self.session_dir),
+                    "--work-dir",
+                    str(self.work_dir),
+                    "--state-path",
+                    str(self.state_path),
+                    "--prompt-file",
+                    str(prompt_file),
+                    "--images-file",
+                    str(images_file),
+                ]
+                self._ensure_default_state()
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                    cwd=self.ga_root,
+                    env=self._base_env(),
+                    **hidden_windows_subprocess_kwargs(),
+                )
+            except Exception:
+                self._release_active_root()
+                workspace_lock.release()
+                raise
 
             def _stdout_reader() -> None:
                 assert process.stdout is not None
@@ -169,6 +203,8 @@ class GATurnController:
                 with self._lock:
                     if self.running and self.running.process is process:
                         self.running = None
+                self._release_active_root(process)
+                workspace_lock.release()
 
             stdout_thread = threading.Thread(target=_stdout_reader, daemon=True, name=f"ga-turn-out-{request_id}")
             wait_thread = threading.Thread(target=_waiter, daemon=True, name=f"ga-turn-wait-{request_id}")

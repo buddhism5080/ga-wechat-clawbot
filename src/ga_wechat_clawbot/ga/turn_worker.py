@@ -20,6 +20,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ga-root", required=True)
     parser.add_argument("--session-dir", required=True)
+    parser.add_argument("--work-dir", required=True)
     parser.add_argument("--state-path", required=True)
     parser.add_argument("--prompt-file", required=True)
     parser.add_argument("--images-file", required=True)
@@ -46,6 +47,7 @@ def main() -> int:
     return run_turn(
         ga_root=args.ga_root,
         session_dir=args.session_dir,
+        work_dir=args.work_dir,
         state_path=args.state_path,
         prompt=prompt,
         images=images,

@@ -19,7 +19,7 @@ from .rendering import (
     split_markdown_chunks,
 )
 from .types import AttachmentRef
-from .util import compact_session_dir_name, ensure_dir, is_probably_absolute_path, portable_basename, remove_tree, safe_slug
+from .util import compact_session_dir_name, ensure_dir, is_probably_absolute_path, portable_basename, safe_slug
 from .wechat_client import WxClawClient
 
 FILE_HINT = "If you need to show files to user, use [FILE:filepath] in your response."
@@ -255,12 +255,12 @@ class SessionActor:
             elif is_probably_absolute_path(raw):
                 candidates.extend([
                     path,
-                    self.session_dir / "work" / basename,
+                    self.controller.work_dir / basename,
                 ])
             else:
                 candidates.extend([
-                    self.session_dir / "work" / raw,
-                    self.session_dir / "work" / basename,
+                    self.controller.work_dir / raw,
+                    self.controller.work_dir / basename,
                     Path.cwd() / raw,
                 ])
             for candidate in candidates[-3:]:
@@ -390,8 +390,7 @@ class SessionActor:
             self._abort_notice_pending = False
             self.controller.abort()
         self.controller.reset_state()
-        remove_tree(self.session_dir / "work")
-        ensure_dir(self.session_dir / "work")
+        self.controller.reset_work_dir()
         return "🧹 已停止当前任务并清空当前会话上下文。" if was_running else "🧹 已清空当前会话上下文。"
 
     def shutdown_for_restart(self, reason: str = "服务正在重启") -> None:

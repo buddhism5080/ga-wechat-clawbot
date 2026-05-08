@@ -237,6 +237,20 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(controller.abort_calls, 0)
             self.assertEqual(client.sent_text, [])
 
+    def test_reset_clears_controller_work_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ga_root = Path(tmp) / "ga-root"
+            (ga_root / "temp").mkdir(parents=True)
+            cfg = self._config(tmp)
+            cfg.ga.root = ga_root
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            marker = session.controller.work_dir / "marker.txt"
+            marker.write_text("x", "utf-8")
+            session.reset()
+            self.assertFalse(marker.exists())
+            self.assertTrue(session.controller.work_dir.exists())
+
     def test_session_dir_stays_compact_for_long_session_key(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(tmp)
@@ -260,12 +274,15 @@ class SessionTests(unittest.TestCase):
 
     def test_send_generated_files_accepts_windows_style_file_ref(self):
         with tempfile.TemporaryDirectory() as tmp:
+            ga_root = Path(tmp) / "ga-root"
+            (ga_root / "temp").mkdir(parents=True)
             cfg = self._config(tmp)
+            cfg.ga.root = ga_root
             client = _DummyClient()
             session = SessionActor("ctx-1", cfg, client)
             session._current_user_id = "u1"
             session._current_context_token = "ctx-token"
-            work_file = session.session_dir / "work" / "结果.png"
+            work_file = session.controller.work_dir / "结果.png"
             work_file.parent.mkdir(parents=True, exist_ok=True)
             work_file.write_bytes(b"png")
             session._send_generated_files([r"C:\\temp\\结果.png"])

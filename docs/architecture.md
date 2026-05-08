@@ -21,11 +21,17 @@ The upstream GenericAgent repository is treated as **read-only**. This project d
 - parent process can kill a stuck turn without corrupting the main server
 
 ## Session state
-Stored under `state/sessions/<context-token>/`:
+Stored under `state/sessions/<session-key>/`:
 - `ga_state.json` — GA conversation state
-- `work/` — generated files and per-session working directory
 - `logs/` — worker logs and GA model response logs
 - `requests/` — per-turn prompt/image payloads sent to the worker
+- `ipc/` — intervention files for steering/running-turn control
+
+## Runtime workspace policy
+- The upstream GA checkout stays unique and is **not** mirrored, copied, or symlinked into each session.
+- Worker subprocesses run from the real `ga.root`.
+- The actual GA working directory is the upstream checkout's shared `temp/`, matching original GenericAgent path assumptions such as `../memory` and `/new`-style resets.
+- `ga-wechat-clawbot` still keeps per-session state/logs/request payloads under `storage.root`, but it does **not** attempt per-session isolated checkouts.
 
 ## Event protocol
 Worker emits JSON lines on stdout:
