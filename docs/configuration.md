@@ -34,13 +34,14 @@ You can define extra command aliases under `wechat.command_aliases`.
 "帮助" = "/help"
 "状态" = "/status"
 "停止" = "/stop"
+"重启" = "/restart"
 "新建" = "/new"
 "模型" = "/llm"
 ```
 
 Notes:
 - Alias keys may omit the `/` prefix.
-- Alias values should point at one of the built-in commands such as `/help`, `/status`, `/stop`, `/new`, or `/llm`.
+- Alias values should point at one of the built-in commands such as `/help`, `/status`, `/stop`, `/restart`, `/new`, or `/llm`.
 - Matching is token-exact on the first token, so `帮助` can trigger help while `帮助我看看这个错误` is still treated as a normal user message.
 
 ## Progress throttling and processing heartbeat
@@ -60,3 +61,18 @@ Notes:
 - Set `progress_interval_sec = 0` to disable progress throttling entirely.
 - `heartbeat_interval_sec` controls how often the bot sends `⏳ 还在处理中，请稍等...` when a turn stays quiet for too long.
 - The default heartbeat interval is **60 seconds**.
+
+## Safe restart command
+The bot supports `/restart` / `/reboot` via a detached helper process so it does not kill its own live process before the replacement command is armed.
+
+```toml
+[wechat]
+# optional explicit restart command; if blank, the helper relaunches
+# `python -m ga_wechat_clawbot.cli --config <current-config> serve`
+restart_command = "systemctl --user restart ga-wechat-clawbot.service"
+```
+
+Notes:
+- For supervised deployments, prefer an explicit service-manager command here.
+- If `restart_command` is blank, the bot falls back to relaunching its current CLI entrypoint.
+- Helper logs are written to `state/logs/restart_helper.log`.

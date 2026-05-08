@@ -277,6 +277,18 @@ class SessionTests(unittest.TestCase):
             self.assertFalse(any("Worker 退出异常" in text for _, _, text in client.sent_text))
             self.assertTrue(any("任务已中止" in text for _, _, text in client.sent_text))
 
+    def test_shutdown_for_restart_aborts_running_silently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            controller = _FakeController()
+            controller.running = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
+            session.controller = controller
+            session.shutdown_for_restart()
+            self.assertEqual(controller.abort_calls, 1)
+            self.assertEqual(client.sent_text, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 from .config import AppConfig
 from .session import SessionRegistry
+from .util import hidden_windows_subprocess_kwargs
 from .wechat_client import WxClawClient
 
 HELP_TEXT = """📖 微信前端命令
@@ -13,20 +19,22 @@ HELP_TEXT = """📖 微信前端命令
 /llm current - 查看当前模型
 /llm N 或 /llm set N - 切换到第 N 个模型
 /stop 或 /abort - 停止当前任务
+/restart 或 /reboot - 安全重启当前机器人进程
 /new 或 /reset 或 /clear - 新建一个干净会话
 
-会话默认复用同一用户的当前 session；收到新的 `context_token` 时会绑定回该 session。发送 `/new` 可显式切到新的 session。也可在配置里为这些命令增加非 `/` 开头别名。""".strip()
+会话默认复用同一用户的当前 session；收到新的 `context_token` 时会绑定回该 session。发送 `/new` 可显式切到新的 session。也可在配置里为这些命令增加非 `/` 开头别名。`/restart` 会先回复确认，再由外部 helper 安全拉起新进程。""".strip()
 
 LLM_USAGE = "用法：/llm、/llm current、/llm N、/llm set N"
 COMMAND_ALIASES = {
     "/commands": "/help",
     "/state": "/status",
     "/abort": "/stop",
+    "/reboot": "/restart",
     "/reset": "/new",
     "/clear": "/new",
     "/model": "/llm",
 }
-SUPPORTED_COMMANDS = {"/help", "/status", "/stop", "/new", "/llm"}
+SUPPORTED_COMMANDS = {"/help", "/status", "/stop", "/restart", "/new", "/llm"}
 
 
 class WeChatApp:
@@ -38,6 +46,7 @@ class WeChatApp:
             voice_encoder_cmd=config.wechat.voice_encoder_cmd,
         )
         self.sessions = SessionRegistry(config, self.client)
+        self._shutdown_requested = False
 
     def ensure_login(self) -> None:
         if not self.client.token:
@@ -120,6 +129,76 @@ class WeChatApp:
             return LLM_USAGE
         return session.switch_llm(llm_no)
 
+    @staticmethod
+    def _format_shell_command(parts: list[str]) -> str:
+        if os.name == "nt":
+            return subprocess.list2cmdline([str(part) for part in parts])
+        return " ".join(shlex.quote(str(part)) for part in parts)
+
+    def _restart_command_text(self) -> str:
+        configured = str(getattr(self.config.wechat, "restart_command", "") or "").strip()
+        if configured:
+            return configured
+        config_path = Path(getattr(self.config, "config_path", "config.toml")).resolve()
+        return self._format_shell_command([
+            sys.executable,
+            "-m",
+            "ga_wechat_clawbot.cli",
+            "--config",
+            str(config_path),
+            "serve",
+        ])
+
+    def _launch_restart_helper(self, restart_command: str) -> None:
+        config_path = Path(getattr(self.config, "config_path", "config.toml")).resolve()
+        workdir = str(config_path.parent)
+        log_dir = Path(getattr(self.config.storage, "log_dir", config_path.parent)).resolve()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        helper_log = log_dir / "restart_helper.log"
+        cmd = [
+            sys.executable,
+            "-m",
+            "ga_wechat_clawbot.restart_helper",
+            "--parent-pid",
+            str(os.getpid()),
+            "--command",
+            restart_command,
+            "--workdir",
+            workdir,
+            "--log-file",
+            str(helper_log),
+        ]
+        with helper_log.open("a", encoding="utf-8") as log_handle:
+            subprocess.Popen(
+                cmd,
+                cwd=workdir,
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=log_handle,
+                start_new_session=True,
+                **hidden_windows_subprocess_kwargs(),
+            )
+
+    def _reply_restart(self, message, text: str) -> None:
+        session = self._resolve_command_session(message, "/restart")
+        if session is not None:
+            self._reply_for_session(message, session, text)
+            return
+        self.reply(message.from_user_id, message.context_token, text)
+
+    def _request_safe_restart(self, message) -> None:
+        if getattr(self, "_shutdown_requested", False):
+            self._reply_restart(message, "♻️ 安全重启已在进行中，请稍候。")
+            return
+        restart_command = self._restart_command_text()
+        try:
+            self._launch_restart_helper(restart_command)
+        except Exception as exc:
+            self._reply_restart(message, f"❌ 启动安全重启 helper 失败：{exc}")
+            return
+        self._shutdown_requested = True
+        self._reply_restart(message, "♻️ 已启动安全重启。当前进程会先退出，再由外部 helper 拉起新进程。")
+
     def _bind_message_session(self, message, session):
         if message.context_token:
             session = self.sessions.bind(message.context_token, session)
@@ -180,7 +259,7 @@ class WeChatApp:
                 return self._bind_message_session(message, direct)
             fallback = self.sessions.find_latest_for_user(message.from_user_id, running_only=True) if message.from_user_id else None
             return self._bind_message_session(message, fallback) if fallback is not None else direct
-        if op in {"/status", "/new", "/llm"}:
+        if op in {"/status", "/restart", "/new", "/llm"}:
             fallback = self.sessions.find_latest_for_user(message.from_user_id, running_only=False) if message.from_user_id else None
             target = direct or fallback
             return self._bind_message_session(message, target) if target is not None else None
@@ -212,6 +291,9 @@ class WeChatApp:
             previous = self._resolve_command_session(message, op)
             session = self._create_new_session(message, previous)
             self._reply_for_session(message, session, self._new_session_reply_text(previous, session))
+            return
+        if op == "/restart":
+            self._request_safe_restart(message)
             return
         session = self._resolve_command_session(message, op)
         if session is None:
@@ -252,6 +334,10 @@ class WeChatApp:
                         f"text={message.text[:80]!r} attachments={len(message.attachments)}"
                     )
                     self.handle_message(message)
+                    if self._shutdown_requested:
+                        self.sessions.shutdown_for_restart()
+                        print("[WeChatApp] restart requested, exiting current process")
+                        return
             except KeyboardInterrupt:
                 print("[WeChatApp] exiting")
                 return

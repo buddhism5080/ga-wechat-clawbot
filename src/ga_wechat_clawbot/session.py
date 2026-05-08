@@ -394,6 +394,18 @@ class SessionActor:
         ensure_dir(self.session_dir / "work")
         return "🧹 已停止当前任务并清空当前会话上下文。" if was_running else "🧹 已清空当前会话上下文。"
 
+    def shutdown_for_restart(self, reason: str = "服务正在重启") -> None:
+        self._clear_pending_interventions()
+        self._stop_typing()
+        if not self.is_running:
+            return
+        self._abort_requested_reason = str(reason or "").strip() or "服务正在重启"
+        self._abort_notice_pending = False
+        try:
+            self.controller.abort()
+        except Exception:
+            pass
+
 
 class SessionRegistry:
     def __init__(self, config: AppConfig, client: WxClawClient) -> None:
@@ -469,3 +481,7 @@ class SessionRegistry:
         ]
         for key in stale:
             self.sessions.pop(key, None)
+
+    def shutdown_for_restart(self, reason: str = "服务正在重启") -> None:
+        for session in self._unique_sessions():
+            session.shutdown_for_restart(reason)

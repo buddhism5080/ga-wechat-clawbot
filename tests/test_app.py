@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -119,12 +120,17 @@ class _DummyRegistry:
 
 
 class AppTests(unittest.TestCase):
-    def _app(self, sessions=None, command_aliases=None):
+    def _app(self, sessions=None, command_aliases=None, restart_command=""):
         app = WeChatApp.__new__(WeChatApp)
-        app.config = SimpleNamespace(wechat=SimpleNamespace(allowed_users=set(), command_aliases=command_aliases or {}))
+        app.config = SimpleNamespace(
+            wechat=SimpleNamespace(allowed_users=set(), command_aliases=command_aliases or {}, restart_command=restart_command),
+            storage=SimpleNamespace(log_dir="/tmp"),
+            config_path="/tmp/config.toml",
+        )
         app.client = _DummyClient()
         base_sessions = {"ctx-1": _DummySession()} if sessions is None else sessions
         app.sessions = _DummyRegistry(base_sessions)
+        app._shutdown_requested = False
         return app
 
     def _message(self, text, context_token="ctx-1"):
@@ -242,6 +248,45 @@ class AppTests(unittest.TestCase):
         app.handle_message(self._message("/stop", context_token=""))
         self.assertIn("没有正在运行的任务", app.client.sent_text[-1][2])
         self.assertEqual(app.sessions.created_keys, [])
+
+    def test_restart_uses_configured_safe_restart_helper_without_creating_session(self):
+        app = self._app({}, restart_command="systemctl --user restart ga-wechat-clawbot.service")
+        launched = []
+        app._launch_restart_helper = launched.append
+        app.handle_message(self._message("/restart", context_token=""))
+        self.assertEqual(launched, ["systemctl --user restart ga-wechat-clawbot.service"])
+        self.assertTrue(app._shutdown_requested)
+        self.assertIn("安全重启", app.client.sent_text[-1][2])
+        self.assertEqual(app.sessions.created_keys, [])
+
+    def test_launch_restart_helper_spawns_detached_helper_process(self):
+        app = self._app({}, restart_command="")
+        with patch("ga_wechat_clawbot.app.subprocess.Popen") as popen_mock:
+            app._launch_restart_helper("echo restart")
+        cmd = popen_mock.call_args.args[0]
+        self.assertIn("ga_wechat_clawbot.restart_helper", cmd)
+        self.assertIn("--command", cmd)
+        self.assertIn("echo restart", cmd)
+        self.assertTrue(popen_mock.call_args.kwargs["start_new_session"])
+
+    def test_restart_defaults_to_cli_relaunch_command(self):
+        app = self._app({}, restart_command="")
+        launched = []
+        app._launch_restart_helper = launched.append
+        app.handle_message(self._message("/restart", context_token=""))
+        self.assertEqual(len(launched), 1)
+        self.assertIn("ga_wechat_clawbot.cli", launched[0])
+        self.assertIn("--config", launched[0])
+        self.assertIn("serve", launched[0])
+
+    def test_restart_replies_busy_when_already_pending(self):
+        app = self._app({}, restart_command="echo restart")
+        app._shutdown_requested = True
+        launched = []
+        app._launch_restart_helper = launched.append
+        app.handle_message(self._message("/restart", context_token=""))
+        self.assertEqual(launched, [])
+        self.assertIn("已在进行中", app.client.sent_text[-1][2])
 
     def test_new_without_existing_session_creates_one_immediately(self):
         app = self._app({})

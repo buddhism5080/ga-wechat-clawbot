@@ -10,6 +10,9 @@ allowed_users = []
 token_file = "~/.wxbot/token.json"
 media_dir = "./state/media"
 voice_encoder_cmd = ""
+# optional explicit restart command for /restart; if blank, falls back to relaunching
+# `python -m ga_wechat_clawbot.cli --config <current-config> serve`
+restart_command = ""
 # progress update throttle for the same turn; set to 0 to disable throttling
 progress_interval_sec = 12
 # processing keepalive / heartbeat interval while a turn is still running
@@ -20,6 +23,7 @@ progress_turn_stride = 2
 # "帮助" = "/help"
 # "状态" = "/status"
 # "停止" = "/stop"
+# "重启" = "/restart"
 # "新建" = "/new"
 # "模型" = "/llm"
 

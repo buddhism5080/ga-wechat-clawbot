@@ -37,6 +37,7 @@ ga-wechat-clawbot --config config.toml serve
 - `/llm current` — show the current model
 - `/llm N` or `/llm set N` — switch to model `N`
 - `/stop` / `/abort` — stop the in-flight task
+- `/restart` / `/reboot` — safely restart the current bot process
 - `/new` / `/reset` / `/clear` — immediately create a fresh clean session
 
 You can also define custom command aliases in `config.toml`, including aliases that do **not** start with `/`.
@@ -46,6 +47,7 @@ You can also define custom command aliases in `config.toml`, including aliases t
 "帮助" = "/help"
 "状态" = "/status"
 "停止" = "/stop"
+"重启" = "/restart"
 "新建" = "/new"
 "模型" = "/llm"
 ```
@@ -61,9 +63,13 @@ progress_interval_sec = 12
 
 # "still processing" keepalive interval
 heartbeat_interval_sec = 60
+
+# optional explicit restart command for /restart; leave blank to relaunch the
+# current CLI command via a detached helper process
+restart_command = "systemctl --user restart ga-wechat-clawbot.service"
 ```
 
-The heartbeat defaults to **60 seconds**.
+The heartbeat defaults to **60 seconds**. Safe restart helper logs go to `state/logs/restart_helper.log`.
 
 ## Doctor
 ```bash
