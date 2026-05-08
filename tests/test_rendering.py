@@ -76,6 +76,17 @@ class RenderingTests(unittest.TestCase):
         self.assertIn("搜索", msg)
         self.assertIn("pytest tests/test_app.py -v", msg)
 
+    def test_render_progress_update_hides_raw_file_read_args(self):
+        msg = render_progress_update(
+            1,
+            "准备检查 thunderbird-agent 状态",
+            [{"tool_name": "file_read", "args": {"path": "../memory/thunderbird_agent.md", "start": 1, "count": 240, "keyword": "status"}}],
+        )
+        self.assertIn("读取文件", msg)
+        self.assertIn("thunderbird_agent.md", msg)
+        self.assertNotIn("../memory/thunderbird_agent.md", msg)
+        self.assertNotIn('"start": 1', msg)
+
     def test_render_abort_message(self):
         msg = render_abort_message("用户请求停止")
         self.assertIn("任务已中止", msg)

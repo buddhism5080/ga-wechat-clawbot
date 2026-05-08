@@ -146,6 +146,18 @@ class SessionTests(unittest.TestCase):
             session._on_event({"event": "progress", "turn": 0, "summary": "step-2", "tool_calls": []})
             self.assertEqual(len(client.sent_text), 1)
 
+    def test_progress_event_does_not_hide_new_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            session._current_user_id = "u1"
+            session._current_context_token = "ctx-token"
+            session._on_event({"event": "progress", "turn": 1, "summary": "step-1", "tool_calls": []})
+            session._on_event({"event": "progress", "turn": 2, "summary": "step-2", "tool_calls": []})
+            self.assertEqual(len(client.sent_text), 2)
+            self.assertIn("第 2 轮", client.sent_text[-1][2])
+
     def test_send_generated_files_accepts_windows_style_file_ref(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(tmp)
@@ -169,6 +181,22 @@ class SessionTests(unittest.TestCase):
             session.controller = controller
             text = session.switch_llm(2)
             self.assertIn("请先停止", text)
+
+    def test_stop_exit_does_not_show_worker_error_after_user_abort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            controller = _FakeController()
+            controller.running = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
+            session.controller = controller
+            session._current_user_id = "u1"
+            session._current_context_token = "ctx-token"
+            stop_text = session.stop()
+            self.assertIn("已发送停止信号", stop_text)
+            session._on_exit(1)
+            self.assertFalse(any("Worker 退出异常" in text for _, _, text in client.sent_text))
+            self.assertTrue(any("任务已中止" in text for _, _, text in client.sent_text))
 
 
 if __name__ == "__main__":

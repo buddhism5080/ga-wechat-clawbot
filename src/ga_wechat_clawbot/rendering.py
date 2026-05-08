@@ -115,11 +115,11 @@ def summarize_tool_args(name: str, args: dict[str, Any], max_len: int = 120) -> 
         pattern = _compact_text(clean_args.get("pattern") or "*", max_len=max_len)
         scope = _tool_path_label(clean_args.get("path") or ".")
         return _compact_text(f"搜索：{pattern}（范围：{scope}）", max_len=max_len)
-    if name == "read_file":
+    if name in {"read_file", "file_read"}:
         return _compact_text(f"读取文件：{_tool_path_label(clean_args.get('path'))}", max_len=max_len)
-    if name == "write_file":
+    if name in {"write_file", "file_write"}:
         return _compact_text(f"写入文件：{_tool_path_label(clean_args.get('path'))}", max_len=max_len)
-    if name == "patch":
+    if name in {"patch", "file_patch"}:
         return _compact_text(f"修改文件：{_tool_path_label(clean_args.get('path'))}", max_len=max_len)
     if name == "terminal":
         command = _compact_text(clean_args.get("command") or "(empty)", max_len=max_len)
@@ -127,11 +127,7 @@ def summarize_tool_args(name: str, args: dict[str, Any], max_len: int = 120) -> 
     if name == "web_search":
         query = clean_args.get("query") or clean_args.get("content") or ""
         return _compact_text(f"网页搜索：{query}", max_len=max_len)
-    try:
-        rendered = json.dumps(clean_args, ensure_ascii=False)
-    except TypeError:
-        rendered = str(clean_args)
-    return rendered[:max_len]
+    return ""
 
 
 def extract_file_refs(text: str) -> list[str]:

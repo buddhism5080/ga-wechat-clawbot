@@ -43,7 +43,10 @@ class SessionActor:
         self._timeout_thread: threading.Thread | None = None
         self._saw_ask_user = False
         self._saw_error = False
+        self._saw_abort = False
         self._timed_out = False
+        self._abort_requested_reason = ""
+        self._abort_notice_pending = False
         self._progress_turn: int | None = None
         self._progress_at = 0.0
         self._current_user_id = ""
@@ -128,6 +131,18 @@ class SessionActor:
         with self._intervention_lock:
             self._pending_interventions.clear()
 
+    def _request_abort(self, reason: str, notify: bool) -> None:
+        self._abort_requested_reason = str(reason or "").strip() or "用户请求停止"
+        self._abort_notice_pending = bool(notify)
+
+        def _run() -> None:
+            try:
+                self.controller.abort()
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, daemon=True, name=f"wechat-abort-{safe_slug(self.session_key)}").start()
+
     def _steer_running_turn(self, user_id: str, context_token: str, text: str, attachments: Sequence[AttachmentRef]) -> bool:
         self._current_user_id = user_id
         if context_token:
@@ -163,7 +178,10 @@ class SessionActor:
         self._current_inbound_paths = {os.path.realpath(att.path) for att in attachments if att.path}
         self._saw_ask_user = False
         self._saw_error = False
+        self._saw_abort = False
         self._timed_out = False
+        self._abort_requested_reason = ""
+        self._abort_notice_pending = False
         self._progress_turn = None
         self._progress_at = 0.0
         prompt, image_paths = self.build_prompt(text, attachments)
@@ -213,7 +231,7 @@ class SessionActor:
         if event == "progress":
             turn = int(payload.get("turn", 0) or 0)
             now = time.time()
-            if self._progress_turn is not None and (turn - self._progress_turn) < self.config.wechat.progress_turn_stride and now - self._progress_at < self.config.wechat.progress_interval_sec:
+            if self._progress_turn is not None and turn == self._progress_turn and now - self._progress_at < self.config.wechat.progress_interval_sec:
                 return
             self._progress_turn = turn
             self._progress_at = now
@@ -234,9 +252,20 @@ class SessionActor:
         if event == "aborted":
             if self._timed_out:
                 return
+            self._saw_abort = True
+            self._abort_notice_pending = False
+            self._abort_requested_reason = ""
             self._reply(render_abort_message(str(payload.get("message", "") or "用户请求停止")))
             return
         if event == "error":
+            if self._abort_requested_reason and not self._timed_out:
+                self._saw_abort = True
+                self._saw_error = True
+                if self._abort_notice_pending:
+                    self._reply(render_abort_message(self._abort_requested_reason))
+                    self._abort_notice_pending = False
+                self._abort_requested_reason = ""
+                return
             self._saw_error = True
             self._reply(render_error_message(str(payload.get("message", "unknown error")), str(payload.get("traceback", ""))))
 
@@ -244,6 +273,12 @@ class SessionActor:
         self._stop_typing()
         self._clear_pending_interventions()
         if self._timed_out:
+            return
+        if self._abort_requested_reason:
+            if self._abort_notice_pending and not self._saw_abort and not self._saw_error:
+                self._reply(render_abort_message(self._abort_requested_reason))
+            self._abort_notice_pending = False
+            self._abort_requested_reason = ""
             return
         if returncode not in (0, 130) and not self._saw_error:
             self._reply(f"❌ Worker 退出异常（code={returncode}）")
@@ -290,7 +325,7 @@ class SessionActor:
     def stop(self) -> str:
         self._clear_pending_interventions()
         if self.is_running:
-            self.controller.abort()
+            self._request_abort("用户请求停止", notify=True)
             return "⏹️ 已发送停止信号，稍后会收到中止通知。"
         return "ℹ️ 当前没有正在运行的任务。"
 
@@ -298,6 +333,8 @@ class SessionActor:
         self._clear_pending_interventions()
         was_running = self.is_running
         if was_running:
+            self._abort_requested_reason = "当前会话已重置"
+            self._abort_notice_pending = False
             self.controller.abort()
         self.controller.reset_state()
         remove_tree(self.session_dir / "work")
