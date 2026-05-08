@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .util import atomic_write_json, ensure_dir
+from .util import atomic_write_json, atomic_write_text, ensure_dir, hidden_windows_subprocess_kwargs
 
 
 @dataclass
@@ -31,6 +31,7 @@ class GATurnController:
         self.default_llm_no = int(default_llm_no)
         self.state_path = self.session_dir / "ga_state.json"
         self.requests_dir = ensure_dir(self.session_dir / "requests")
+        self.ipc_dir = ensure_dir(self.session_dir / "ipc")
         self.running: RunningTurn | None = None
         self._lock = threading.Lock()
         self._src_root = Path(__file__).resolve().parents[2] / "src"
@@ -69,6 +70,7 @@ class GATurnController:
             errors="replace",
             env=self._base_env(),
             cwd=str(self.session_dir),
+            **hidden_windows_subprocess_kwargs(),
         )
         if proc.returncode != 0:
             log_path = self.state_path.parent / "probe_worker.log"
@@ -126,6 +128,7 @@ class GATurnController:
                 bufsize=1,
                 cwd=str(self.session_dir),
                 env=self._base_env(),
+                **hidden_windows_subprocess_kwargs(),
             )
 
             def _stdout_reader() -> None:
@@ -154,6 +157,17 @@ class GATurnController:
             wait_thread.start()
             self.running = RunningTurn(process=process, started_at=time.time(), request_dir=request_dir, stdout_thread=stdout_thread, wait_thread=wait_thread)
             return self.running
+
+    def intervene(self, prompt: str) -> bool:
+        text = str(prompt or "").strip()
+        if not text:
+            return False
+        with self._lock:
+            running = self.running
+        if running is None or running.process.poll() is not None:
+            return False
+        atomic_write_text(self.ipc_dir / "_intervene", text + "\n")
+        return True
 
     def abort(self, grace_sec: int = 5) -> None:
         with self._lock:

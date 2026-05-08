@@ -49,6 +49,8 @@ class SessionActor:
         self._current_user_id = ""
         self._current_context_token = ""
         self._current_inbound_paths: set[str] = set()
+        self._intervention_lock = threading.Lock()
+        self._pending_interventions: list[str] = []
 
     @property
     def is_running(self) -> bool:
@@ -112,11 +114,48 @@ class SessionActor:
         image_paths = [attachment.path for attachment in attachments if attachment.kind == "image" and os.path.exists(attachment.path)]
         return prompt, image_paths
 
+    def build_intervention_prompt(self, text: str, attachments: Sequence[AttachmentRef]) -> str:
+        sections = [
+            "### 用户补充消息",
+            text.strip() or "用户补充发送了附件，请结合附件内容更新当前任务。",
+        ]
+        attachment_section = build_attachment_prompt(list(attachments))
+        if attachment_section:
+            sections.extend(["", attachment_section, "", "如需查看新增附件内容，请读取上面 source 指向的本地文件。"])
+        return "\n".join(section for section in sections if section is not None).strip()
+
+    def _clear_pending_interventions(self) -> None:
+        with self._intervention_lock:
+            self._pending_interventions.clear()
+
+    def _steer_running_turn(self, user_id: str, context_token: str, text: str, attachments: Sequence[AttachmentRef]) -> bool:
+        self._current_user_id = user_id
+        self._current_context_token = context_token
+        self._current_inbound_paths.update(os.path.realpath(att.path) for att in attachments if att.path)
+        message = self.build_intervention_prompt(text, attachments)
+        with self._intervention_lock:
+            self._pending_interventions.append(message)
+            blocks = [
+                "用户在当前任务执行期间追加了新的消息。不要开启新会话；继续当前任务，并将下面内容视为最新补充/修正。若与之前计划冲突，以最新补充为准。",
+                "",
+            ]
+            for idx, item in enumerate(self._pending_interventions, start=1):
+                blocks.extend([f"## 补充 {idx}", item, ""])
+            payload = "\n".join(blocks).strip()
+        if not self.controller.intervene(payload):
+            self._clear_pending_interventions()
+            return False
+        self.client.send_text(user_id, "↪️ 已插入当前任务，会在下一轮生效。", context_token=context_token)
+        return True
+
     def submit_turn(self, user_id: str, context_token: str, text: str, attachments: Sequence[AttachmentRef]) -> None:
         self.last_active = time.time()
-        if self.is_running:
-            self.client.send_text(user_id, "⚠️ 当前会话还在运行中，请先等待完成或发送 /stop。", context_token=context_token)
+        if self.is_running and self._steer_running_turn(user_id, context_token, text, attachments):
             return
+        if self.is_running:
+            self.client.send_text(user_id, "⚠️ 当前会话还在运行中，补充消息插入失败，请稍后重试或发送 /stop。", context_token=context_token)
+            return
+        self._clear_pending_interventions()
         self._current_user_id = user_id
         self._current_context_token = context_token
         self._current_inbound_paths = {os.path.realpath(att.path) for att in attachments if att.path}
@@ -167,6 +206,7 @@ class SessionActor:
 
     def _on_event(self, payload: dict) -> None:
         self.last_active = time.time()
+        self._clear_pending_interventions()
         event = payload.get("event")
         if event == "progress":
             turn = int(payload.get("turn", 0) or 0)
@@ -200,6 +240,7 @@ class SessionActor:
 
     def _on_exit(self, returncode: int) -> None:
         self._stop_typing()
+        self._clear_pending_interventions()
         if self._timed_out:
             return
         if returncode not in (0, 130) and not self._saw_error:
@@ -245,12 +286,14 @@ class SessionActor:
         return f"✅ 已切换到 [{info['llm_no']}] {info['name']}"
 
     def stop(self) -> str:
+        self._clear_pending_interventions()
         if self.is_running:
             self.controller.abort()
             return "⏹️ 已发送停止信号，稍后会收到中止通知。"
         return "ℹ️ 当前没有正在运行的任务。"
 
     def reset(self) -> str:
+        self._clear_pending_interventions()
         was_running = self.is_running
         if was_running:
             self.controller.abort()

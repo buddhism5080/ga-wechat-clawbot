@@ -18,7 +18,7 @@ from typing import Any, Iterable
 from urllib.parse import quote
 
 from .types import AttachmentRef, InboundMessage
-from .util import ensure_dir, expand_path
+from .util import ensure_dir, expand_path, hidden_windows_subprocess_kwargs
 
 try:  # pragma: no cover - runtime dependency
     import qrcode
@@ -430,6 +430,7 @@ class WxClawClient:
                     text=True,
                     timeout=20,
                     check=True,
+                    **hidden_windows_subprocess_kwargs(),
                 )
                 seconds = float((proc.stdout or "0").strip() or 0)
                 if seconds > 0:
@@ -466,7 +467,7 @@ class WxClawClient:
         os.close(fd)
         try:
             cmd = self._format_voice_encoder_cmd(file_path, output_path)
-            subprocess.run(cmd, shell=True, timeout=300, check=True)
+            subprocess.run(cmd, shell=True, timeout=300, check=True, **hidden_windows_subprocess_kwargs())
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 return output_path, True
         except Exception as exc:

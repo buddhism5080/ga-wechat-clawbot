@@ -34,12 +34,19 @@ class _FakeController:
     def __init__(self):
         self.running = None
         self.started = None
+        self.interventions = []
 
     def start_turn(self, prompt, images, on_event, on_exit):
         self.started = (prompt, images)
         process = type("P", (), {"poll": lambda self: None})()
         self.running = type("Running", (), {"process": process, "started_at": 0.0})()
         return self.running
+
+    def intervene(self, prompt):
+        if self.running is None or self.running.process.poll() is not None:
+            return False
+        self.interventions.append(prompt)
+        return True
 
     def list_llms(self):
         return {"llms": [{"idx": 0, "name": "gpt", "current": True}], "llm_no": 0}
@@ -78,7 +85,7 @@ class SessionTests(unittest.TestCase):
             self.assertIn("transcript=你好", prompt)
             self.assertEqual(images, [str(image_path)])
 
-    def test_busy_session_replies_with_warning(self):
+    def test_busy_session_steers_running_turn(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(tmp)
             client = _DummyClient()
@@ -87,7 +94,24 @@ class SessionTests(unittest.TestCase):
             controller.running = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
             session.controller = controller
             session.submit_turn("u1", "ctx-token", "hello", [])
-            self.assertIn("还在运行中", client.sent_text[-1][2])
+            self.assertIn("已插入当前任务", client.sent_text[-1][2])
+            self.assertIn("hello", controller.interventions[-1])
+
+    def test_pending_interventions_reset_after_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            controller = _FakeController()
+            controller.running = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
+            session.controller = controller
+            session.submit_turn("u1", "ctx-token", "first", [])
+            session._current_user_id = "u1"
+            session._current_context_token = "ctx-token"
+            session._on_event({"event": "progress", "turn": 1, "summary": "step-1", "tool_calls": []})
+            session.submit_turn("u1", "ctx-token", "second", [])
+            self.assertIn("second", controller.interventions[-1])
+            self.assertNotIn("first", controller.interventions[-1])
 
     def test_aborted_event_replies_with_notice(self):
         with tempfile.TemporaryDirectory() as tmp:

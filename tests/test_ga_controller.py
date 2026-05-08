@@ -41,13 +41,16 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             controller = GATurnController("/tmp/GenericAgent", tmp)
             completed = type("Completed", (), {"returncode": 0, "stdout": '{"ok": true, "llms": [{"idx": 0, "name": "m", "current": true}]}', "stderr": ""})
-            with patch("subprocess.run", return_value=completed) as run_mock:
-                info = controller.list_llms()
+            with patch("ga_wechat_clawbot.ga_controller.hidden_windows_subprocess_kwargs", return_value={"creationflags": 123, "startupinfo": "si"}):
+                with patch("subprocess.run", return_value=completed) as run_mock:
+                    info = controller.list_llms()
             self.assertTrue(info["ok"])
             self.assertEqual(info["llms"][0]["name"], "m")
             self.assertEqual(run_mock.call_args.kwargs["encoding"], "utf-8")
             self.assertEqual(run_mock.call_args.kwargs["errors"], "replace")
             self.assertEqual(run_mock.call_args.kwargs["env"]["PYTHONIOENCODING"], "utf-8")
+            self.assertEqual(run_mock.call_args.kwargs["creationflags"], 123)
+            self.assertEqual(run_mock.call_args.kwargs["startupinfo"], "si")
 
     def test_start_turn_writes_request_files_and_parses_events(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -60,10 +63,11 @@ class ControllerTests(unittest.TestCase):
             fake = _FakeProcess(lines)
             events = []
             exits = []
-            with patch("subprocess.Popen", return_value=fake) as popen_mock:
-                running = controller.start_turn("hello", ["/tmp/a.png"], events.append, exits.append)
-                running.stdout_thread.join(1)
-                running.wait_thread.join(1)
+            with patch("ga_wechat_clawbot.ga_controller.hidden_windows_subprocess_kwargs", return_value={"creationflags": 123, "startupinfo": "si"}):
+                with patch("subprocess.Popen", return_value=fake) as popen_mock:
+                    running = controller.start_turn("hello", ["/tmp/a.png"], events.append, exits.append)
+                    running.stdout_thread.join(1)
+                    running.wait_thread.join(1)
             self.assertEqual(events[0]["event"], "progress")
             self.assertEqual(events[-1]["event"], "done")
             self.assertEqual(exits, [0])
@@ -72,6 +76,15 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(popen_mock.call_args.kwargs["encoding"], "utf-8")
             self.assertEqual(popen_mock.call_args.kwargs["errors"], "replace")
             self.assertEqual(popen_mock.call_args.kwargs["env"]["PYTHONIOENCODING"], "utf-8")
+            self.assertEqual(popen_mock.call_args.kwargs["creationflags"], 123)
+            self.assertEqual(popen_mock.call_args.kwargs["startupinfo"], "si")
+
+    def test_intervene_writes_ipc_file_for_running_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = GATurnController("/tmp/GenericAgent", tmp)
+            controller.running = type("Running", (), {"process": type("P", (), {"poll": lambda self: None})()})()
+            self.assertTrue(controller.intervene("hello steer"))
+            self.assertEqual((Path(tmp) / "ipc" / "_intervene").read_text("utf-8"), "hello steer\n")
 
 
 if __name__ == "__main__":

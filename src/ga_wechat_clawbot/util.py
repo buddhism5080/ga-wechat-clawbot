@@ -4,6 +4,7 @@ import json
 import ntpath
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -40,6 +41,36 @@ def atomic_write_json(path: str | os.PathLike[str], payload: Any) -> None:
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+def atomic_write_text(path: str | os.PathLike[str], content: str, encoding: str = "utf-8") -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=target.name + ".", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as handle:
+            handle.write(content)
+        os.replace(tmp_path, target)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def hidden_windows_subprocess_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    kwargs: dict[str, Any] = {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    startf_use = getattr(subprocess, "STARTF_USESHOWWINDOW", None)
+    if startupinfo_cls is not None and startf_use is not None:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= startf_use
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
 
 
 def safe_slug(value: str, max_len: int = 120) -> str:
