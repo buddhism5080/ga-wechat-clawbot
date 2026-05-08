@@ -1,0 +1,18 @@
+[ga]
+root = "/tmp/GenericAgent"
+python = "python3"
+default_llm_no = 0
+turn_timeout_sec = 900
+session_idle_ttl_sec = 43200
+
+[wechat]
+allowed_users = []
+token_file = "~/.wxbot/token.json"
+media_dir = "./state/media"
+voice_encoder_cmd = ""
+progress_interval_sec = 12
+progress_turn_stride = 2
+
+[storage]
+root = "./state"
+log_dir = "./state/logs"
