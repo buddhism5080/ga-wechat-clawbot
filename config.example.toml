@@ -8,6 +8,7 @@ session_idle_ttl_sec = 43200
 [wechat]
 allowed_users = []
 token_file = "~/.wxbot/token.json"
+# process health heartbeat is written beside token_file as `health.json`
 media_dir = "./state/media"
 voice_encoder_cmd = ""
 # optional explicit restart command for /restart; if blank, falls back to relaunching

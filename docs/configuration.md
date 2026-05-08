@@ -62,6 +62,28 @@ Notes:
 - `heartbeat_interval_sec` controls how often the bot sends `⏳ 还在处理中，请稍等...` when a turn stays quiet for too long.
 - The default heartbeat interval is **60 seconds**.
 
+## Process health heartbeat
+The bot also writes a lightweight process health file to:
+
+```text
+Path(wechat.token_file).parent / "health.json"
+```
+
+For example, with the default token path, the health file will be `~/.wxbot/health.json`.
+
+The JSON always includes:
+- `status` — always `"healthy"` when the bot considers itself healthy
+- `pid` — current bot process PID
+- `ts` — Unix timestamp from `time.time()`
+- `iso` — UTC wall-clock timestamp (`YYYY-MM-DDTHH:MM:SS`)
+
+It may also include:
+- `bot_id`
+- `last_update_ts`
+- `error`
+
+The file intentionally excludes tokens, cookies, and other secrets.
+
 ## Safe restart command
 The bot supports `/restart` / `/reboot` via a detached helper process so it does not kill its own live process before the replacement command is armed.
 

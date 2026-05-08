@@ -69,7 +69,7 @@ heartbeat_interval_sec = 60
 restart_command = "systemctl --user restart ga-wechat-clawbot.service"
 ```
 
-The heartbeat defaults to **60 seconds**. Safe restart helper logs go to `state/logs/restart_helper.log`.
+The heartbeat defaults to **60 seconds**. The process health heartbeat is written to `Path(token_file).parent / "health.json"` (for the default token path, that is `~/.wxbot/health.json`). Safe restart helper logs go to `state/logs/restart_helper.log`.
 
 ## Doctor
 ```bash

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import os
 import shlex
 import subprocess
@@ -9,7 +10,7 @@ from pathlib import Path
 
 from .config import AppConfig
 from .session import SessionRegistry
-from .util import hidden_windows_subprocess_kwargs
+from .util import atomic_write_json, hidden_windows_subprocess_kwargs
 from .wechat_client import WxClawClient
 
 HELP_TEXT = """📖 微信前端命令
@@ -47,6 +48,8 @@ class WeChatApp:
         )
         self.sessions = SessionRegistry(config, self.client)
         self._shutdown_requested = False
+        self._last_health_update_ts = 0.0
+        self._last_health_error = ""
 
     def ensure_login(self) -> None:
         if not self.client.token:
@@ -102,6 +105,43 @@ class WeChatApp:
 
     def reply(self, user_id: str, context_token: str, text: str) -> None:
         self.client.send_text(user_id, text, context_token=context_token)
+
+    def _health_path(self) -> Path:
+        token_file = Path(getattr(self.config.wechat, "token_file", "~/.wxbot/token.json"))
+        return token_file.expanduser().resolve().parent / "health.json"
+
+    def _health_payload(self, now: float | None = None, error: str = "") -> dict[str, object]:
+        current = float(time.time() if now is None else now)
+        last_update_ts = float(getattr(self, "_last_health_update_ts", 0.0) or current)
+        payload: dict[str, object] = {
+            "status": "healthy",
+            "pid": os.getpid(),
+            "ts": current,
+            "iso": dt.datetime.fromtimestamp(current, dt.UTC).strftime("%Y-%m-%dT%H:%M:%S"),
+            "last_update_ts": last_update_ts,
+        }
+        bot_id = str(getattr(self.client, "bot_id", "") or "").strip()
+        if bot_id:
+            payload["bot_id"] = bot_id
+        error_text = str(error or getattr(self, "_last_health_error", "") or "").strip()
+        if error_text:
+            payload["error"] = error_text
+        return payload
+
+    def _write_health_snapshot(self, now: float | None = None, error: str = "") -> Path:
+        health_path = self._health_path()
+        atomic_write_json(health_path, self._health_payload(now=now, error=error))
+        return health_path
+
+    def _touch_health(self, now: float | None = None, error: str = "") -> Path | None:
+        current = float(time.time() if now is None else now)
+        self._last_health_update_ts = current
+        self._last_health_error = str(error or "").strip()
+        try:
+            return self._write_health_snapshot(now=current, error=self._last_health_error)
+        except Exception as exc:
+            print(f"[WeChatApp] health heartbeat write failed: {exc}")
+            return None
 
     def _reply_for_session(self, message, session, text: str) -> None:
         context_token = message.context_token or getattr(session, "_current_context_token", "")
@@ -323,24 +363,32 @@ class WeChatApp:
         session.submit_turn(message.from_user_id, message.context_token, text, message.attachments)
 
     def run_forever(self) -> None:
+        self._touch_health()
         self.ensure_login()
+        self._touch_health()
         print(f"[WeChatApp] started bot_id={self.client.bot_id}")
         while True:
             try:
+                self._touch_health()
                 self.sessions.evict_idle()
+                self._touch_health()
                 for message in self.client.iter_user_messages(timeout=30):
+                    self._touch_health()
                     print(
                         f"[WeChatApp] recv user={message.from_user_id} ctx={message.context_token[:12]} "
                         f"text={message.text[:80]!r} attachments={len(message.attachments)}"
                     )
                     self.handle_message(message)
+                    self._touch_health()
                     if self._shutdown_requested:
                         self.sessions.shutdown_for_restart()
+                        self._touch_health()
                         print("[WeChatApp] restart requested, exiting current process")
                         return
             except KeyboardInterrupt:
                 print("[WeChatApp] exiting")
                 return
             except Exception as exc:
+                self._touch_health(error=str(exc))
                 print(f"[WeChatApp] loop error: {exc}")
                 time.sleep(5)

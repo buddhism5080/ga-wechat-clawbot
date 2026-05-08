@@ -1,6 +1,9 @@
+import json
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -66,6 +69,7 @@ class _DummyRegistry:
         self.created_keys = []
         self.bound_keys = []
         self.fresh_counter = 0
+        self.shutdown_for_restart_calls = 0
 
     def get(self, key):
         self.last_key = key
@@ -118,16 +122,28 @@ class _DummyRegistry:
             return None
         return max(candidates, key=lambda session: session.last_active)
 
+    def shutdown_for_restart(self):
+        self.shutdown_for_restart_calls += 1
+
+    def evict_idle(self):
+        return None
+
 
 class AppTests(unittest.TestCase):
-    def _app(self, sessions=None, command_aliases=None, restart_command=""):
+    def _app(self, sessions=None, command_aliases=None, restart_command="", token_file="/tmp/wxbot/token.json"):
         app = WeChatApp.__new__(WeChatApp)
         app.config = SimpleNamespace(
-            wechat=SimpleNamespace(allowed_users=set(), command_aliases=command_aliases or {}, restart_command=restart_command),
+            wechat=SimpleNamespace(
+                allowed_users=set(),
+                command_aliases=command_aliases or {},
+                restart_command=restart_command,
+                token_file=Path(token_file),
+            ),
             storage=SimpleNamespace(log_dir="/tmp"),
             config_path="/tmp/config.toml",
         )
         app.client = _DummyClient()
+        app.client.bot_id = ""
         base_sessions = {"ctx-1": _DummySession()} if sessions is None else sessions
         app.sessions = _DummyRegistry(base_sessions)
         app._shutdown_requested = False
@@ -248,6 +264,65 @@ class AppTests(unittest.TestCase):
         app.handle_message(self._message("/stop", context_token=""))
         self.assertIn("没有正在运行的任务", app.client.sent_text[-1][2])
         self.assertEqual(app.sessions.created_keys, [])
+
+    def test_write_health_snapshot_uses_token_parent_and_required_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "wxbot" / "token.json"
+            app = self._app({}, token_file=token_file)
+            app.client.bot_id = "bot-123"
+            app.client.token = "super-secret-token"
+            app._last_health_update_ts = 1778281200.0
+            with patch("ga_wechat_clawbot.app.os.getpid", return_value=12345):
+                health_path = app._write_health_snapshot(now=1778281200.0)
+            self.assertEqual(health_path, token_file.parent / "health.json")
+            payload = json.loads(health_path.read_text("utf-8"))
+            self.assertEqual(payload["status"], "healthy")
+            self.assertEqual(payload["pid"], 12345)
+            self.assertEqual(payload["ts"], 1778281200.0)
+            self.assertEqual(payload["iso"], "2026-05-08T23:00:00")
+            self.assertEqual(payload["bot_id"], "bot-123")
+            self.assertEqual(payload["last_update_ts"], 1778281200.0)
+            self.assertNotIn("token", payload)
+            self.assertNotIn("cookie", payload)
+
+    def test_run_forever_writes_health_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "wxbot" / "token.json"
+            app = self._app({}, token_file=token_file)
+            app.ensure_login = lambda: None
+            app.client.bot_id = "bot-123"
+            app.client.iter_user_messages = lambda timeout=30: iter([self._message("/restart", context_token="")])
+            app._launch_restart_helper = lambda restart_command: None
+            app.run_forever()
+            payload = json.loads((token_file.parent / "health.json").read_text("utf-8"))
+            self.assertEqual(payload["status"], "healthy")
+            self.assertEqual(payload["bot_id"], "bot-123")
+            self.assertEqual(payload["pid"], os.getpid())
+            self.assertGreater(payload["ts"], 0)
+            self.assertGreater(payload["last_update_ts"], 0)
+
+    def test_run_forever_ignores_health_write_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            from ga_wechat_clawbot.util import atomic_write_json as real_atomic_write_json
+
+            token_file = Path(tmp) / "wxbot" / "token.json"
+            app = self._app({}, token_file=token_file)
+            app.ensure_login = lambda: None
+            app.client.bot_id = "bot-123"
+            app.client.iter_user_messages = lambda timeout=30: iter([self._message("/restart", context_token="")])
+            app._launch_restart_helper = lambda restart_command: None
+            calls = {"count": 0}
+
+            def flaky_write(path, payload):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise OSError("disk full")
+                return real_atomic_write_json(path, payload)
+
+            with patch("ga_wechat_clawbot.app.atomic_write_json", side_effect=flaky_write):
+                app.run_forever()
+            self.assertTrue(app._shutdown_requested)
+            self.assertGreaterEqual(calls["count"], 2)
 
     def test_restart_uses_configured_safe_restart_helper_without_creating_session(self):
         app = self._app({}, restart_command="systemctl --user restart ga-wechat-clawbot.service")
