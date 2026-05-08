@@ -32,7 +32,7 @@ def main() -> int:
     else:
         reset_state(args.state_path)
         payload = {"ok": True, "reset": True}
-    sys.__stdout__.write(json.dumps(payload, ensure_ascii=False))
+    sys.__stdout__.write(json.dumps(payload))
     sys.__stdout__.flush()
     return 0
 

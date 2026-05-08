@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 from .types import AttachmentRef
+from .util import portable_basename
 
 DEFAULT_ASK_USER_QUESTION = "请提供下一步信息："
 DEFAULT_ASK_USER_INTRO = "🙋 需要你来决定下一步"
@@ -240,7 +241,7 @@ def split_markdown_chunks(text: str, limit: int = 1800) -> list[str]:
 
 def _attachment_summary(paths: Iterable[str]) -> str:
     labels = {"image": "图片", "voice": "语音", "video": "视频", "file": "文件"}
-    return "\n".join(f"- {labels.get(route_path_kind(path), '附件')}：`{os.path.basename(path)}`" for path in paths)
+    return "\n".join(f"- {labels.get(route_path_kind(path), '附件')}：`{portable_basename(path)}`" for path in paths)
 
 
 def render_progress_update(turn: int, summary: str, tool_calls: Sequence[dict[str, Any]] | None = None) -> str:

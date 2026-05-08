@@ -19,7 +19,7 @@ from .rendering import (
     split_markdown_chunks,
 )
 from .types import AttachmentRef
-from .util import ensure_dir, remove_tree, safe_slug
+from .util import ensure_dir, is_probably_absolute_path, portable_basename, remove_tree, safe_slug
 from .wechat_client import WxClawClient
 
 FILE_HINT = "If you need to show files to user, use [FILE:filepath] in your response."
@@ -141,12 +141,18 @@ class SessionActor:
         candidates = []
         for raw in files:
             path = Path(raw)
+            basename = portable_basename(raw) or path.name
             if path.is_absolute():
                 candidates.append(path)
+            elif is_probably_absolute_path(raw):
+                candidates.extend([
+                    path,
+                    self.session_dir / "work" / basename,
+                ])
             else:
                 candidates.extend([
                     self.session_dir / "work" / raw,
-                    self.session_dir / "work" / path.name,
+                    self.session_dir / "work" / basename,
                     Path.cwd() / raw,
                 ])
             for candidate in candidates[-3:]:

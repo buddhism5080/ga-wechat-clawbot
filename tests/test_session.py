@@ -110,6 +110,19 @@ class SessionTests(unittest.TestCase):
             session._on_event({"event": "progress", "turn": 0, "summary": "step-2", "tool_calls": []})
             self.assertEqual(len(client.sent_text), 1)
 
+    def test_send_generated_files_accepts_windows_style_file_ref(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(tmp)
+            client = _DummyClient()
+            session = SessionActor("ctx-1", cfg, client)
+            session._current_user_id = "u1"
+            session._current_context_token = "ctx-token"
+            work_file = session.session_dir / "work" / "结果.png"
+            work_file.parent.mkdir(parents=True, exist_ok=True)
+            work_file.write_bytes(b"png")
+            session._send_generated_files([r"C:\\temp\\结果.png"])
+            self.assertEqual(client.sent_path[-1][2], str(work_file.resolve()))
+
     def test_switch_llm_rejected_while_running(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(tmp)

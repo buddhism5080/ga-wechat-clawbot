@@ -40,7 +40,7 @@ def main() -> int:
     images = json.loads(Path(args.images_file).read_text("utf-8"))
 
     def emit(payload: dict) -> None:
-        orig_stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        orig_stdout.write(json.dumps(payload) + "\n")
         orig_stdout.flush()
 
     return run_turn(

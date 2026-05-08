@@ -40,6 +40,8 @@ class GATurnController:
         env = os.environ.copy()
         py_path = str(self._src_root)
         env["PYTHONPATH"] = py_path if not env.get("PYTHONPATH") else py_path + os.pathsep + env["PYTHONPATH"]
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         return env
 
     def _ensure_default_state(self) -> None:
@@ -59,7 +61,15 @@ class GATurnController:
             *args,
         ]
         self._ensure_default_state()
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=self._base_env(), cwd=str(self.session_dir))
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=self._base_env(),
+            cwd=str(self.session_dir),
+        )
         if proc.returncode != 0:
             log_path = self.state_path.parent / "probe_worker.log"
             raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"probe failed: {proc.returncode}; see {log_path}")
@@ -111,6 +121,8 @@ class GATurnController:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 cwd=str(self.session_dir),
                 env=self._base_env(),

@@ -54,6 +54,11 @@ class RenderingTests(unittest.TestCase):
         self.assertTrue(rendered.ask_user)
         self.assertIn("选环境", rendered.text_chunks[0])
 
+    def test_render_final_reply_summarizes_windows_generated_file_name(self):
+        rendered = render_final_reply("done", generated_paths=[r"C:\\temp\\结果.png"])
+        self.assertIn("结果.png", rendered.text_chunks[0])
+        self.assertNotIn(r"C:\\temp\\结果.png", rendered.text_chunks[0])
+
     def test_render_progress_update(self):
         msg = render_progress_update(3, "正在读取文件", [{"tool_name": "ask_user", "args": {"question": "选环境", "candidates": ["测试"]}}])
         self.assertIn("第 3 轮", msg)

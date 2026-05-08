@@ -41,10 +41,13 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             controller = GATurnController("/tmp/GenericAgent", tmp)
             completed = type("Completed", (), {"returncode": 0, "stdout": '{"ok": true, "llms": [{"idx": 0, "name": "m", "current": true}]}', "stderr": ""})
-            with patch("subprocess.run", return_value=completed):
+            with patch("subprocess.run", return_value=completed) as run_mock:
                 info = controller.list_llms()
             self.assertTrue(info["ok"])
             self.assertEqual(info["llms"][0]["name"], "m")
+            self.assertEqual(run_mock.call_args.kwargs["encoding"], "utf-8")
+            self.assertEqual(run_mock.call_args.kwargs["errors"], "replace")
+            self.assertEqual(run_mock.call_args.kwargs["env"]["PYTHONIOENCODING"], "utf-8")
 
     def test_start_turn_writes_request_files_and_parses_events(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -57,7 +60,7 @@ class ControllerTests(unittest.TestCase):
             fake = _FakeProcess(lines)
             events = []
             exits = []
-            with patch("subprocess.Popen", return_value=fake):
+            with patch("subprocess.Popen", return_value=fake) as popen_mock:
                 running = controller.start_turn("hello", ["/tmp/a.png"], events.append, exits.append)
                 running.stdout_thread.join(1)
                 running.wait_thread.join(1)
@@ -66,6 +69,9 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(exits, [0])
             self.assertEqual((running.request_dir / "prompt.txt").read_text("utf-8"), "hello")
             self.assertEqual(json.loads((running.request_dir / "images.json").read_text("utf-8")), ["/tmp/a.png"])
+            self.assertEqual(popen_mock.call_args.kwargs["encoding"], "utf-8")
+            self.assertEqual(popen_mock.call_args.kwargs["errors"], "replace")
+            self.assertEqual(popen_mock.call_args.kwargs["env"]["PYTHONIOENCODING"], "utf-8")
 
 
 if __name__ == "__main__":

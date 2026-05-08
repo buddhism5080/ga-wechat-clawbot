@@ -17,7 +17,11 @@ If you want outbound audio to send as native WeChat voice more often, configure:
 
 ```toml
 [wechat]
-voice_encoder_cmd = "pilk -i {input} -o {output}"
+voice_encoder_cmd = "pilk -i {input_q} -o {output_q}"
 ```
+
+Available placeholders:
+- `{input}` / `{output}` — raw paths
+- `{input_q}` / `{output_q}` — shell-quoted paths (recommended, especially on Windows or when paths contain spaces)
 
 If transcoding is not available or fails, the project falls back to sending the audio as a normal file.

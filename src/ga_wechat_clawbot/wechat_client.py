@@ -4,6 +4,7 @@ import base64
 import hashlib
 import math
 import os
+import shlex
 import shutil
 import struct
 import subprocess
@@ -445,13 +446,26 @@ class WxClawClient:
                 pass
         return 1
 
+    def _shell_quote(self, value: str) -> str:
+        if os.name == "nt":
+            return subprocess.list2cmdline([str(value)])
+        return shlex.quote(str(value))
+
+    def _format_voice_encoder_cmd(self, input_path: str, output_path: str) -> str:
+        return self.voice_encoder_cmd.format(
+            input=input_path,
+            output=output_path,
+            input_q=self._shell_quote(input_path),
+            output_q=self._shell_quote(output_path),
+        )
+
     def _maybe_transcode_voice(self, file_path: str) -> tuple[str, bool]:
         if file_path.lower().endswith(".silk") or not self.voice_encoder_cmd:
             return file_path, False
         fd, output_path = tempfile.mkstemp(prefix="ga_wechat_voice_", suffix=".silk")
         os.close(fd)
         try:
-            cmd = self.voice_encoder_cmd.format(input=file_path, output=output_path)
+            cmd = self._format_voice_encoder_cmd(file_path, output_path)
             subprocess.run(cmd, shell=True, timeout=300, check=True)
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 return output_path, True

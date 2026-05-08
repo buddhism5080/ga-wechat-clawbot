@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import shutil
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 
@@ -47,6 +48,22 @@ def safe_slug(value: str, max_len: int = 120) -> str:
         cleaned.append(ch if ch.isalnum() or ch in "._-" else "_")
     out = "".join(cleaned).strip("._") or "session"
     return out[:max_len]
+
+
+def portable_basename(path: str | os.PathLike[str]) -> str:
+    raw = str(path or "").rstrip("/\\")
+    if not raw:
+        return ""
+    return ntpath.basename(raw) or os.path.basename(raw) or Path(raw).name
+
+
+def is_probably_absolute_path(path: str | os.PathLike[str]) -> bool:
+    raw = str(path or "")
+    if not raw:
+        return False
+    if Path(raw).is_absolute():
+        return True
+    return PureWindowsPath(raw).is_absolute()
 
 
 def remove_tree(path: str | os.PathLike[str]) -> None:
