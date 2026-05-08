@@ -13,6 +13,13 @@ voice_encoder_cmd = ""
 progress_interval_sec = 12
 progress_turn_stride = 2
 
+[wechat.command_aliases]
+# "帮助" = "/help"
+# "状态" = "/status"
+# "停止" = "/stop"
+# "新建" = "/new"
+# "模型" = "/llm"
+
 [storage]
 root = "./state"
 log_dir = "./state/logs"

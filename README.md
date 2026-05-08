@@ -37,7 +37,20 @@ ga-wechat-clawbot --config config.toml serve
 - `/llm current` — show the current model
 - `/llm N` or `/llm set N` — switch to model `N`
 - `/stop` / `/abort` — stop the in-flight task
-- `/new` / `/reset` / `/clear` — clear the current session and keep future messages on the same reused session path
+- `/new` / `/reset` / `/clear` — immediately create a fresh clean session
+
+You can also define custom command aliases in `config.toml`, including aliases that do **not** start with `/`.
+
+```toml
+[wechat.command_aliases]
+"帮助" = "/help"
+"状态" = "/status"
+"停止" = "/stop"
+"新建" = "/new"
+"模型" = "/llm"
+```
+
+Aliases match the first token exactly, so `帮助` can be a command alias while `帮助我分析一下` still goes through the normal chat path.
 
 ## Doctor
 ```bash

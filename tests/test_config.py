@@ -27,6 +27,10 @@ python = "python3"
 allowed_users = ["u1", "u2"]
 media_dir = "{tmp_path / 'media'}"
 
+[wechat.command_aliases]
+"帮助" = "/help"
+"模型" = "llm"
+
 [storage]
 root = "{tmp_path / 'state'}"
 """.strip(),
@@ -35,6 +39,7 @@ root = "{tmp_path / 'state'}"
             cfg = load_config(cfg_path)
             self.assertEqual(cfg.ga.root, ga_root.resolve())
             self.assertEqual(cfg.wechat.allowed_users, {"u1", "u2"})
+            self.assertEqual(cfg.wechat.command_aliases, {"帮助": "/help", "模型": "llm"})
             self.assertTrue(cfg.wechat.media_dir.exists())
             self.assertTrue(cfg.storage.root.exists())
             self.assertTrue(cfg.storage.log_dir.exists())

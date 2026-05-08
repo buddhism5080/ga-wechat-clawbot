@@ -119,9 +119,9 @@ class _DummyRegistry:
 
 
 class AppTests(unittest.TestCase):
-    def _app(self, sessions=None):
+    def _app(self, sessions=None, command_aliases=None):
         app = WeChatApp.__new__(WeChatApp)
-        app.config = SimpleNamespace(wechat=SimpleNamespace(allowed_users=set()))
+        app.config = SimpleNamespace(wechat=SimpleNamespace(allowed_users=set(), command_aliases=command_aliases or {}))
         app.client = _DummyClient()
         base_sessions = {"ctx-1": _DummySession()} if sessions is None else sessions
         app.sessions = _DummyRegistry(base_sessions)
@@ -143,6 +143,26 @@ class AppTests(unittest.TestCase):
         app.handle_message(self._message("/commands"))
         self.assertEqual(app.client.sent_text[-1][2], HELP_TEXT)
         self.assertEqual(app.sessions.created_keys, [])
+
+    def test_custom_non_slash_help_alias(self):
+        app = self._app({}, command_aliases={"帮助": "/help"})
+        app.handle_message(self._message("帮助"))
+        self.assertEqual(app.client.sent_text[-1][2], HELP_TEXT)
+        self.assertEqual(app.sessions.created_keys, [])
+
+    def test_custom_non_slash_llm_alias_preserves_args(self):
+        session = _DummySession(user_id="u1", last_active=10)
+        app = self._app({"ctx-1": session}, command_aliases={"模型": "/llm"})
+        app.handle_message(self._message("模型 current"))
+        self.assertEqual(app.client.sent_text[-1][2], "LLM CURRENT")
+        self.assertIn(("llm-current", None), session.calls)
+
+    def test_non_slash_alias_matches_exact_token_only(self):
+        app = self._app({}, command_aliases={"帮助": "/help"})
+        app.handle_message(self._message("帮助我分析一下", context_token=""))
+        created = app.sessions.sessions["u1"]
+        self.assertIn(("submit", "帮助我分析一下", 0), created.calls)
+        self.assertEqual(app.sessions.created_keys, ["u1"])
 
     def test_unknown_command_shows_error_and_help(self):
         app = self._app({})

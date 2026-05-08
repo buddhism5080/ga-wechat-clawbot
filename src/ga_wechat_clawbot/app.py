@@ -15,7 +15,7 @@ HELP_TEXT = """📖 微信前端命令
 /stop 或 /abort - 停止当前任务
 /new 或 /reset 或 /clear - 新建一个干净会话
 
-会话默认复用同一用户的当前 session；收到新的 `context_token` 时会绑定回该 session。发送 `/new` 可显式切到新的 session。""".strip()
+会话默认复用同一用户的当前 session；收到新的 `context_token` 时会绑定回该 session。发送 `/new` 可显式切到新的 session。也可在配置里为这些命令增加非 `/` 开头别名。""".strip()
 
 LLM_USAGE = "用法：/llm、/llm current、/llm N、/llm set N"
 COMMAND_ALIASES = {
@@ -26,6 +26,7 @@ COMMAND_ALIASES = {
     "/clear": "/new",
     "/model": "/llm",
 }
+SUPPORTED_COMMANDS = {"/help", "/status", "/stop", "/new", "/llm"}
 
 
 class WeChatApp:
@@ -53,6 +54,42 @@ class WeChatApp:
     @staticmethod
     def _normalize_command_name(op: str) -> str:
         return COMMAND_ALIASES.get(op.lower(), op.lower())
+
+    @classmethod
+    def _normalize_command_text(cls, text: str) -> str:
+        parts = str(text or "").strip().split()
+        if not parts:
+            return ""
+        head = parts[0].strip()
+        if not head.startswith("/"):
+            head = "/" + head.lstrip("/")
+        head = cls._normalize_command_name(head)
+        return " ".join([head, *parts[1:]]).strip()
+
+    def _command_aliases(self) -> dict[str, str]:
+        aliases = {alias.lower(): target for alias, target in COMMAND_ALIASES.items()}
+        custom = getattr(self.config.wechat, "command_aliases", {}) or {}
+        for raw_alias, raw_target in custom.items():
+            alias = str(raw_alias or "").strip().lower()
+            target = self._normalize_command_text(str(raw_target or ""))
+            if alias and target:
+                aliases[alias] = target
+        return aliases
+
+    def _expand_command_text(self, text: str) -> str | None:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        lowered = raw.lower()
+        aliases = self._command_aliases()
+        for alias in sorted(aliases, key=len, reverse=True):
+            if lowered == alias or lowered.startswith(alias + " "):
+                remainder = raw[len(alias):].lstrip()
+                target = aliases[alias]
+                return f"{target} {remainder}".strip() if remainder else target
+        if raw.startswith("/"):
+            return raw
+        return None
 
     def reply(self, user_id: str, context_token: str, text: str) -> None:
         self.client.send_text(user_id, text, context_token=context_token)
@@ -168,7 +205,7 @@ class WeChatApp:
         if op == "/help":
             self.reply(message.from_user_id, message.context_token, HELP_TEXT)
             return
-        if op not in {"/status", "/stop", "/new", "/llm"}:
+        if op not in SUPPORTED_COMMANDS - {"/help"}:
             self.reply(message.from_user_id, message.context_token, f"⚠️ 未知命令：{raw_op}\n\n{HELP_TEXT}")
             return
         if op == "/new":
@@ -194,8 +231,9 @@ class WeChatApp:
             print(f"[WeChatApp] unauthorized user={message.from_user_id}")
             return
         text = (message.text or "").strip()
-        if text.startswith("/"):
-            self.handle_command(message, text)
+        command_text = self._expand_command_text(text)
+        if command_text is not None:
+            self.handle_command(message, command_text)
             return
         if not text and not message.attachments:
             return

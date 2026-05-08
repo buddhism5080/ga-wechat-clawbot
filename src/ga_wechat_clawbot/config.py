@@ -26,6 +26,7 @@ class WeChatConfig:
     voice_encoder_cmd: str = ""
     progress_interval_sec: int = 12
     progress_turn_stride: int = 2
+    command_aliases: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -48,6 +49,20 @@ def _allowed_set(value: Any) -> set[str]:
     if isinstance(value, str):
         value = [value]
     return {str(item).strip() for item in value if str(item).strip()}
+
+
+def _string_mapping(value: Any) -> dict[str, str]:
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError("command_aliases must be a TOML table/object")
+    mapped = {}
+    for key, raw in value.items():
+        alias = str(key).strip()
+        target = str(raw).strip()
+        if alias and target:
+            mapped[alias] = target
+    return mapped
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -75,6 +90,7 @@ def load_config(path: str | Path) -> AppConfig:
         voice_encoder_cmd=str(wechat_raw.get("voice_encoder_cmd", "") or "").strip(),
         progress_interval_sec=max(3, int(wechat_raw.get("progress_interval_sec", 12) or 12)),
         progress_turn_stride=max(1, int(wechat_raw.get("progress_turn_stride", 2) or 2)),
+        command_aliases=_string_mapping(wechat_raw.get("command_aliases")),
     )
 
     storage = StorageConfig(root=storage_root, log_dir=log_dir)
